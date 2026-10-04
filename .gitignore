@@ -1,6 +1,7 @@
 /core
 /models
 /roms
+/.venv
 
 *.pyc
 **/__pycache__
