@@ -1,0 +1,6 @@
+/core
+/models
+/roms
+
+*.pyc
+**/__pycache__
