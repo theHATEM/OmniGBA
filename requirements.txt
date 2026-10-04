@@ -1,0 +1,6 @@
+# Python 3.12 or newer (libretro.py and numpy 2.5 require it). Tested on Python 3.12.0, Windows 10.
+libretro.py==0.12.0
+pygame==2.6.1
+numpy==2.5.3
+ncnn==1.0.20260526
+opencv-python==5.0.0.93
