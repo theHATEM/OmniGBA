@@ -124,8 +124,48 @@ Prints the time per frame. On a GTX 1660 Ti: x2 about 13 ms, x4 about 20 ms.
 |---|---|
 | `play_gba.py` | window, keyboard input, emulation loop |
 | `fast_video.py` | fast frame conversion for libretro.py's video driver |
+| `discard_audio.py` | audio driver that drops the sound (libretro.py's default keeps every sample in memory) |
 | `upscale_model.py` | the Real-ESRGAN model on the GPU (ncnn) |
 | `upscale_process.py` | runs the model in a separate process; frames pass through shared memory |
+| `dataset/` | automated frame collection for training a smaller upscaler (see below) |
+| `tests/` | tests for `dataset/` |
+
+## Collecting training frames
+
+`dataset/` plays a game by itself and saves a varied set of frames, as training data for a smaller
+model that copies the current upscaler. It needs no human play:
+
+- **Exploration (Go-Explore style):** it remembers save states of every new *scene* (identified
+  from the background layers, ignoring sprites), keeps returning to the least-explored ones and plays
+  bursts of random input from there: walking, button mashing, buttons held together, and scripted
+  special-move inputs (quarter circles, dashes, charges, combo strings).
+- **New graphics:** tiles that never appeared in video memory before (a new enemy, pose or effect)
+  count as progress, and those frames are always saved.
+- **Cheats:** infinite health (and similar codes) for the two supported games, so runs never end in a
+  game over. Codes live in `dataset/cheats.py`, keyed by the ROM's game code.
+
+```powershell
+python -m dataset.explore --rom "roms\rom_d\Dragon Ball GT - Transformation.gba" --minutes 30
+```
+
+Options: `--target-frames N` stops after saving N frames, `--seed` changes the random play,
+`--no-cheats` disables cheats. Output goes to `data\raw\<game>\<timestamp>\`:
+
+| File | Contents |
+|---|---|
+| `frames\*.png` | saved frames, 240x160, lossless |
+| `frames.jsonl` | one line per frame: scene id, whether it showed a new scene or new graphics |
+| `cells.jsonl` | every scene found and the scene it was reached from (for splitting train/validation by area) |
+| `run.json` | ROM, seed, cheats used |
+
+### Running the tests
+
+```powershell
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Tests that need the emulator core and a ROM are skipped when those files are missing.
 
 ## Troubleshooting
 

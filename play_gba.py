@@ -21,6 +21,7 @@ import pygame
 from libretro import Session
 from libretro.api.input import JoypadState
 
+from discard_audio import DiscardAudioDriver
 from fast_video import FastArrayVideoDriver  # keep fast_video.py next to this file
 from upscale_process import UpscalerProcess
 
@@ -67,6 +68,13 @@ def joypad_poller():
         yield JoypadState(**{button: bool(keys[key]) for key, button in KEYMAP.items()})
 
 
+def open_session(input=joypad_poller) -> Session:
+    # The game is silent: the default audio driver would keep every sample in memory
+    return Session(
+        CORE_PATH, ROM_PATH, input=input, video=FastArrayVideoDriver, audio=DiscardAudioDriver
+    )
+
+
 def set_canvas(scale: int) -> pygame.Surface:
     """
     Set the drawing size to the GBA screen x scale.
@@ -100,9 +108,7 @@ def main() -> None:
 
     # The model loads in the worker process while the game boots; until the first
     # upscaled frame arrives (or if the upscaler fails) the raw frames are shown.
-    with UpscalerProcess(UPSCALE_MODEL, GBA_WIDTH, GBA_HEIGHT) as upscaler, Session(
-        CORE_PATH, ROM_PATH, input=joypad_poller, video=FastArrayVideoDriver
-    ) as session:
+    with UpscalerProcess(UPSCALE_MODEL, GBA_WIDTH, GBA_HEIGHT) as upscaler, open_session() as session:
         running = True
         while running:
             # --- window / hotkey events -------------------------------------
