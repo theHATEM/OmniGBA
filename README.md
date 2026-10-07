@@ -143,20 +143,33 @@ model that copies the current upscaler. It needs no human play:
   count as progress, and those frames are always saved.
 - **Cheats:** infinite health (and similar codes) for the two supported games, so runs never end in a
   game over. Codes live in `dataset/cheats.py`, keyed by the ROM's game code.
+- **Routes into the stages:** `dataset/routes.py` scripts the way from power-on into each stage, and
+  exploration also starts from those states. Bursts are shared evenly between these starting points,
+  and bursts from a stage never press Start (in gameplay it only opens the pause menu).
+  - Dragon Ball GT: Story Mode, then each of the 11 planets on the star map (picked by setting the
+    star map cursor in RAM).
+  - Naruto: New Game, then later chapters reached by playing (random input until the chapter number in
+    RAM changes; retried if the game falls back to the title). It stops at a chapter it cannot beat
+    within 30 minutes of game time; the explorer usually gets further from there.
+
+  The route states are made on the first run for a game (about 30 s for Dragon Ball GT, 2-3 minutes
+  for Naruto) and kept in `data\seeds\<game>\`. Delete that folder to make them again, for example
+  after changing a route or the cheats.
 
 ```powershell
 python -m dataset.explore --rom "roms\rom_d\Dragon Ball GT - Transformation.gba" --minutes 30
 ```
 
 Options: `--target-frames N` stops after saving N frames, `--seed` changes the random play,
-`--no-cheats` disables cheats. Output goes to `data\raw\<game>\<timestamp>\`:
+`--no-cheats` disables cheats, `--no-routes` explores from power-on only. Output goes to
+`data\raw\<game>\<timestamp>\`:
 
 | File | Contents |
 |---|---|
 | `frames\*.png` | saved frames, 240x160, lossless |
-| `frames.jsonl` | one line per frame: scene id, whether it showed a new scene or new graphics |
-| `cells.jsonl` | every scene found and the scene it was reached from (for splitting train/validation by area) |
-| `run.json` | ROM, seed, cheats used |
+| `frames.jsonl` | one line per frame: scene id, starting point (root), whether it showed a new scene or new graphics |
+| `cells.jsonl` | every scene found, the scene it was reached from and its root (for splitting train/validation by area) |
+| `run.json` | ROM, seed, cheats used, which root is which route state |
 
 ### Running the tests
 
@@ -165,7 +178,12 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-Tests that need the emulator core and a ROM are skipped when those files are missing.
+Tests that need the emulator core and a ROM are skipped when those files are missing. One slow test
+(playing Naruto's first chapter, about a minute) only runs with `GBA_SLOW_TESTS` set:
+
+```powershell
+$env:GBA_SLOW_TESTS = "1"; python -m pytest tests/test_routes.py
+```
 
 ## Troubleshooting
 

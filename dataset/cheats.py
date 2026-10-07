@@ -31,12 +31,11 @@ GAMES = {
     "BN2E": Game(
         "naruto",
         [
+            # The lists also have "Infinite Energy" codes for Naruto, Sasuke, Sakura and
+            # Rock Lee; they are left out because those characters are also opponents
+            # (mission 1 is a fight against Lee) and would become unbeatable.
             ("Invincible", "33000350+0003+33000352+0002"),
             ("Infinite Chakra", "33000356+00FF"),
-            ("Infinite Energy (Naruto)", "3300454A+00C8"),
-            ("Infinite Energy (Sasuke)", "3300454B+00C8"),
-            ("Infinite Energy (Sakura)", "3300454C+00C8"),
-            ("Infinite Energy (Rock Lee)", "3300454D+00C8"),
             ("Infinite Double Jump", "33000347+0000"),
         ],
     ),

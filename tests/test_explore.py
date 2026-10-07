@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from dataset.explore import Explorer
-from dataset.inputs import A, LEFT, RIGHT
+from dataset.inputs import A, LEFT, RIGHT, START, InputPolicy
 
 VRAM, IO = 0x06000000, 0x04000000
 
@@ -29,11 +29,13 @@ class FakeGBA:
         self._io[0:2] = (0x00, 0x01)  # mode 0, background 0 on
         self._io[8:10] = (0x00, 31)  # background 0 map in screen block 31
         self.cheats = None
+        self.pressed = set()  # every mask stepped with
 
     def apply_cheats(self, codes):
         self.cheats = list(codes)
 
     def step(self, mask, frames=1):
+        self.pressed.add(mask)
         for _ in range(frames):
             if mask & RIGHT:
                 self.pos = min(self.pos + 1, 200)
@@ -124,6 +126,45 @@ def test_frames_per_scene_are_capped(tmp_path):
     assert sum(not row["forced"] for row in rows) <= 5
 
 
+def _start_happy_explorer(tmp_path, emu):
+    return Explorer(emu, tmp_path, random.Random(0), policy=InputPolicy(random.Random(1), start_chance=0.5))
+
+
+def test_add_root_starts_a_separate_root(tmp_path):
+    emu = FakeGBA()
+    explorer = _explorer(tmp_path, emu)
+    explorer.boot()
+    emu.step(RIGHT, 100)  # somewhere else in the game, e.g. reached by a scripted route
+    explorer.add_root(emu.save_state(), allow_start=False)
+    assert len(explorer.archive.roots) == 2
+
+
+def test_bursts_from_no_start_roots_never_press_start(tmp_path):
+    emu = FakeGBA()
+    explorer = _start_happy_explorer(tmp_path, emu)
+    explorer.add_root(emu.save_state(), allow_start=False)
+    explorer.run(iterations=30)
+    explorer.close()
+    assert not any(mask & START for mask in emu.pressed)
+
+
+def test_bursts_from_the_power_on_root_may_press_start(tmp_path):
+    emu = FakeGBA()
+    explorer = _start_happy_explorer(tmp_path, emu)
+    explorer.boot()
+    explorer.run(iterations=30)
+    explorer.close()
+    assert any(mask & START for mask in emu.pressed)
+
+
+def test_saved_frames_record_their_root(tmp_path):
+    explorer = _explorer(tmp_path)
+    explorer.boot()
+    explorer.run(iterations=20)
+    explorer.close()
+    assert all(row["root"] == 0 for row in _rows(tmp_path))
+
+
 def test_close_writes_cell_lineage(tmp_path):
     explorer = _explorer(tmp_path)
     explorer.boot()
@@ -133,6 +174,7 @@ def test_close_writes_cell_lineage(tmp_path):
     assert len(cells) == len(explorer.archive)
     assert cells[0]["parent"] is None
     assert all(c["parent"] < c["id"] for c in cells[1:])
+    assert all(c["root"] == 0 for c in cells)
 
 
 CORE = Path("core/mgba_libretro.dll")

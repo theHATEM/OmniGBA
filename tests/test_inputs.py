@@ -67,3 +67,8 @@ def test_mask_to_joypad_sets_named_buttons():
     pad = mask_to_joypad(A | LEFT)
     assert pad.a and pad.left
     assert not (pad.b or pad.right or pad.start)
+
+
+def test_burst_without_start_never_presses_start():
+    masks = InputPolicy(random.Random(7), start_chance=0.5).burst(20000, allow_start=False)
+    assert not any(m & START for m in masks)

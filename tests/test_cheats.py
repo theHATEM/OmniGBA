@@ -29,3 +29,16 @@ def test_cheat_codes_are_libretro_strings():
 
 def test_unknown_game_has_no_cheats():
     assert cheats_for("ZZZZ") == []
+
+
+def _write_addresses(code):
+    """Addresses written by a CodeBreaker code (type 3: 8-bit write, type 8: 16-bit write)."""
+    parts = code.split("+")
+    return {int(parts[i], 16) & 0x0FFFFFFF for i in range(0, len(parts), 2) if parts[i][0] in "38"}
+
+
+def test_naruto_cheats_leave_opponents_beatable():
+    # 0x0300454A-D hold the four ninjas' energy; mission 1's opponent is Rock Lee,
+    # so locking those makes the first mission impossible to win
+    written = set().union(*(_write_addresses(code) for _, code in GAMES["BN2E"].cheats))
+    assert not written & set(range(0x0300454A, 0x0300454E))

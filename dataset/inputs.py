@@ -101,15 +101,16 @@ class InputPolicy:
         self.start_chance = start_chance
         self.select_chance = select_chance
 
-    def burst(self, frames: int) -> list[int]:
+    def burst(self, frames: int, allow_start: bool = True) -> list[int]:
+        """One mask per frame. allow_start=False: never press Start (it pauses gameplay)."""
         out = []
         while len(out) < frames:
-            out.extend(self._segment())
+            out.extend(self._segment(allow_start))
         return out[:frames]
 
-    def _segment(self) -> list[int]:
+    def _segment(self, allow_start: bool) -> list[int]:
         r = self._rng
-        if r.random() < self.start_chance:
+        if r.random() < self.start_chance and allow_start:
             return [START] * 3 + [0] * 20
         if r.random() < self.select_chance:
             return [SELECT] * 3 + [0] * 20
