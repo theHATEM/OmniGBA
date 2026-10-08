@@ -143,6 +143,13 @@ model that copies the current upscaler. It needs no human play:
   count as progress, and those frames are always saved.
 - **Cheats:** infinite health (and similar codes) for the two supported games, so runs never end in a
   game over. Codes live in `dataset/cheats.py`, keyed by the ROM's game code.
+- **Progress counters:** some progress does not show on screen. In Dragon Ball GT the screen does not
+  scroll until the enemy wave is beaten, and a burst that starts again from a saved state loses the
+  damage done. So every 1000 points of score (read from RAM) also count as a new scene, and later
+  bursts continue from there. Counters live in `dataset/progress.py`, keyed by game code (Naruto has
+  none yet). It is slow: on the first planet, getting past the first wave and up to the mid-boss took about an
+  hour of game time from that one stage, while a 10-minute run with all 11 planets gives each about 5
+  minutes. Long runs are needed for the explorer to get far into the stages.
 - **Routes into the stages:** `dataset/routes.py` scripts the way from power-on into each stage, and
   exploration also starts from those states. Bursts are shared evenly between these starting points,
   and bursts from a stage never press Start (in gameplay it only opens the pause menu).
@@ -161,15 +168,41 @@ python -m dataset.explore --rom "roms\rom_d\Dragon Ball GT - Transformation.gba"
 ```
 
 Options: `--target-frames N` stops after saving N frames, `--seed` changes the random play,
-`--no-cheats` disables cheats, `--no-routes` explores from power-on only. Output goes to
-`data\raw\<game>\<timestamp>\`:
+`--no-cheats` disables cheats, `--no-routes` explores from power-on only, `--no-progress` ignores the
+progress counter. Output goes to `data\raw\<game>\<timestamp>\`:
 
 | File | Contents |
 |---|---|
 | `frames\*.png` | saved frames, 240x160, lossless |
-| `frames.jsonl` | one line per frame: scene id, starting point (root), whether it showed a new scene or new graphics |
+| `frames.jsonl` | one line per frame: scene id, starting point (root), progress level, whether it showed a new scene or new graphics |
 | `cells.jsonl` | every scene found, the scene it was reached from and its root (for splitting train/validation by area) |
 | `run.json` | ROM, seed, cheats used, which root is which route state |
+
+### Frames from TAS movies
+
+[TASVideos](https://tasvideos.org/) publishes tool-assisted speedruns as movie files: the buttons
+pressed on every frame, not video. `dataset/tas.py` replays BizHawk movies in BizHawk, saves every
+frame losslessly at 240x160, and keeps the varied ones with the same selection as the explorer. That
+gives whole playthroughs of other games with no per-game work. (Neither Dragon Ball GT
+Transformation nor Naruto: Ninja Council 2 has a TAS.)
+
+| What | Where to get it |
+|---|---|
+| BizHawk | [BizHawk releases](https://github.com/TASEmulators/BizHawk/releases): extract the `win-x64` zip anywhere. Best is the version a movie was made with (its TASVideos page says which); newer versions usually work but can desync. |
+| GBA BIOS | a dump from your own console. BizHawk does not play GBA movies without one, and most movies need the official BIOS (SHA1 `300C20DF6731A33952DED8C436F7F186D25D3492`). |
+| Movies | from a game's publication page on TASVideos: the `.bk2` file, or the `.zip` the site downloads. Only movies made with BizHawk's mGBA core work; VBA-rr (`.vbm`) and GBAHawk (`.gbmv`) movies are skipped. |
+| ROMs | the exact ROMs the movies were made for, anywhere under `roms\` (found by checksum). |
+
+```powershell
+python -m dataset.tas --bizhawk "C:\BizHawk\EmuHawk.exe" --bios "C:\bios\gba_bios.bin" "C:\tas"
+```
+
+Movies can be given one by one or as folders. Output goes to `data\raw\<game>\tas_<movie name>\`
+with the same files as the explorer's (no `cells.jsonl`); `frames.jsonl` records the movie frame of
+each saved frame and `run.json` the movie, ROM and BizHawk versions. Movies already done are skipped,
+and a movie that cannot be played is skipped with the reason (missing ROM, different BIOS, other
+emulator). BizHawk's window shows while it runs; it uses a settings file of its own, so your BizHawk
+settings are not changed. A 10-minute movie takes under 3 minutes.
 
 ### Running the tests
 
@@ -183,6 +216,13 @@ Tests that need the emulator core and a ROM are skipped when those files are mis
 
 ```powershell
 $env:GBA_SLOW_TESTS = "1"; python -m pytest tests/test_routes.py
+```
+
+The test that plays a movie in real BizHawk needs the paths of `EmuHawk.exe` and a GBA BIOS file
+(any BIOS works for it):
+
+```powershell
+$env:GBA_BIZHAWK = "C:\BizHawk\EmuHawk.exe"; $env:GBA_BIOS = "C:\bios\gba_bios.bin"; python -m pytest tests/test_tas.py
 ```
 
 ## Troubleshooting

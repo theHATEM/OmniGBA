@@ -14,8 +14,11 @@ Besides the power-on state, scripted routes (see routes.py) can add further root
 e.g. one per stage; the archive shares bursts evenly between roots. Bursts from
 those roots never press Start, because in gameplay Start only opens the pause menu
 (and from there "end game" leads back to the title).
+Games with a progress counter in RAM (e.g. the score, see progress.py) also make
+a new cell each time the counter reaches a higher level, so bursts keep the damage
+done to an enemy wave that has to be beaten before the screen scrolls on.
 Cells whose bursts stop making progress get picked less (see archive.py). Frames
-are saved selectively (see recorder.py), at most `per_scene_cap` per scene; progress
+are saved selectively (see recorder.py), at most `per_scene_cap` per cell; progress
 frames are always saved, at most one every `forced_save_gap` emulated frames.
 Cheats (infinite health etc.) stop the run from getting stuck on game over.
 
@@ -31,6 +34,7 @@ import argparse
 import json
 import random
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 from dataset.archive import Archive
@@ -45,7 +49,7 @@ class Explorer:
     def __init__(self, emu, out_dir, rng: random.Random, cheats=(),
                  burst_frames=(60, 360), check_every: int = 4, screen_shape=(8, 6, 4),
                  per_group_cap: int = 2, per_scene_cap: int = 20, min_diff: float = 4.0,
-                 forced_save_gap: int = 300, policy: InputPolicy | None = None):
+                 forced_save_gap: int = 300, policy: InputPolicy | None = None, progress=None):
         self.emu = emu
         self.out_dir = Path(out_dir)
         self.rng = rng
@@ -55,6 +59,7 @@ class Explorer:
         self.screen_shape = screen_shape  # (width, height, levels) of the screen fingerprint
         self.per_scene_cap = per_scene_cap
         self.forced_save_gap = forced_save_gap
+        self.progress = progress  # emu -> progress level (see progress.py), part of the cell key
 
         self.archive = Archive(rng)
         self.tracker = GraphicsTracker()
@@ -67,23 +72,28 @@ class Explorer:
         self._no_start_roots: set[int] = set()
         self.emu.apply_cheats(self.cheats)  # mGBA keeps them across state loads
 
+    def _level(self) -> int:
+        return self.progress(self.emu) if self.progress else 0
+
     def _look(self):
-        """(frame, scene key, number of never-seen tiles) for the current moment."""
+        """(frame, cell key, progress level, number of never-seen tiles) for the current moment."""
         frame = self.emu.frame()
         vram, io = self.emu.memory(VRAM), self.emu.memory(IO)
-        return frame, scene_key(vram, io, frame), self.tracker.update(vram, io)
+        level = self._level()
+        key = scene_key(vram, io, frame) + level.to_bytes(4, "little")
+        return frame, key, level, self.tracker.update(vram, io)
 
     def boot(self, frames: int = 10) -> None:
         """Start the power-on root: title screens and menus, where Start is needed."""
         self.emu.step(0, frames)
         self.frames_run += frames
-        _, key, _ = self._look()
+        _, key, _, _ = self._look()
         self.archive.add(key, self.emu.save_state())
 
     def add_root(self, state: bytes, allow_start: bool = True):
         """Explore from `state` as a root of its own; None if that scene is already known."""
         self.emu.load_state(state)
-        _, key, _ = self._look()
+        _, key, _, _ = self._look()
         cell = self.archive.add(key, state)
         if cell is not None and not allow_start:
             self._no_start_roots.add(cell.root)
@@ -99,7 +109,7 @@ class Explorer:
             self.emu.step(mask)
             if i % self.check_every:
                 continue
-            frame, key, new_graphics = self._look()
+            frame, key, level, new_graphics = self._look()
             new_scene = key not in self.archive
             if new_scene:  # saving a state costs ~1 ms, so only for new scenes
                 current = self.archive.add(key, self.emu.save_state(), parent=current.id)
@@ -113,7 +123,7 @@ class Explorer:
                 continue
             if self.recorder.offer(frame, group=screen_key(frame, *self.screen_shape), force=force,
                                    cell=current.id, root=current.root,
-                                   new_scene=new_scene, new_graphics=new_graphics,
+                                   progress=level, new_scene=new_scene, new_graphics=new_graphics,
                                    forced=force, iteration=self.iterations):
                 self._saved_per_cell[current.id] = self._saved_per_cell.get(current.id, 0) + 1
                 if force:
@@ -155,6 +165,7 @@ class Explorer:
 def main() -> None:
     from dataset.cheats import GAMES, cheats_for, rom_game_code
     from dataset.emulator import HeadlessGBA
+    from dataset.progress import progress_for
     from dataset.routes import ROUTES, load_or_make_seeds
 
     ap = argparse.ArgumentParser(description="Collect GBA frames by automated exploration")
@@ -167,6 +178,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-cheats", action="store_true")
     ap.add_argument("--no-routes", action="store_true", help="explore from power-on only")
+    ap.add_argument("--no-progress", action="store_true", help="ignore the game's progress counter")
     args = ap.parse_args()
 
     code = rom_game_code(args.rom)
@@ -174,6 +186,7 @@ def main() -> None:
     cheats = [] if args.no_cheats else cheats_for(code)
     if not cheats and not args.no_cheats:
         print(f"no cheats known for game code {code}; exploring without them")
+    counter = None if args.no_progress else progress_for(code)
 
     seeds = []
     if code in ROUTES and not args.no_routes:
@@ -195,7 +208,8 @@ def main() -> None:
     print(f"game {game} ({code}), {len(cheats)} cheats, writing to {out_dir}")
 
     with HeadlessGBA(args.core, args.rom) as emu:
-        explorer = Explorer(emu, out_dir, random.Random(args.seed), cheats=cheats)
+        explorer = Explorer(emu, out_dir, random.Random(args.seed), cheats=cheats,
+                            progress=counter.level if counter else None)
         explorer.boot()
         roots = {0: "power-on"}
         for name, state in seeds:
@@ -205,6 +219,7 @@ def main() -> None:
         (out_dir / "run.json").write_text(json.dumps({
             "rom": str(args.rom), "game_code": code, "seed": args.seed,
             "minutes": args.minutes, "cheats": cheats, "roots": roots,
+            "progress": {**asdict(counter), "address": f"{counter.address:#010x}"} if counter else None,
         }, indent=2))
         explorer.run(seconds=args.minutes * 60, target_frames=args.target_frames, log_every=10)
         explorer.close()

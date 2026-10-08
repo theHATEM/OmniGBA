@@ -30,6 +30,7 @@ class FakeGBA:
         self._io[8:10] = (0x00, 31)  # background 0 map in screen block 31
         self.cheats = None
         self.pressed = set()  # every mask stepped with
+        self.peak_tiles = 0  # most tiles ever loaded, across state loads
 
     def apply_cheats(self, codes):
         self.cheats = list(codes)
@@ -45,6 +46,7 @@ class FakeGBA:
                 self.tiles_loaded += 1
                 slot = 0x10000 + self.tiles_loaded * 32
                 self._vram[slot:slot + 32] = self.tiles_loaded
+                self.peak_tiles = max(self.peak_tiles, self.tiles_loaded)
             if self.map_follows_position:  # new scenery tiles every 8 steps
                 self._vram[0xF800:0xF802] = np.frombuffer(np.uint16(self.pos // 8 * 16).tobytes(), np.uint8)
 
@@ -163,6 +165,30 @@ def test_saved_frames_record_their_root(tmp_path):
     explorer.run(iterations=20)
     explorer.close()
     assert all(row["root"] == 0 for row in _rows(tmp_path))
+
+
+def _tiles_progress(emu):
+    return emu.tiles_loaded // 5
+
+
+def test_progress_carries_over_between_bursts(tmp_path):
+    # one scene throughout; only the progress counter shows the game moving on, like a
+    # stage that does not scroll until the enemy wave is beaten
+    emu = FakeGBA(map_follows_position=False)
+    explorer = Explorer(emu, tmp_path, random.Random(0), burst_frames=(20, 20), progress=_tiles_progress)
+    explorer.boot()
+    explorer.run(iterations=200)
+    explorer.close()
+    assert emu.peak_tiles > 40  # a single 20-frame burst loads at most 20
+
+
+def test_saved_frames_record_progress(tmp_path):
+    explorer = Explorer(FakeGBA(), tmp_path, random.Random(0), progress=_tiles_progress)
+    explorer.boot()
+    explorer.run(iterations=40)
+    explorer.close()
+    levels = [row["progress"] for row in _rows(tmp_path)]
+    assert levels[0] == 0 and max(levels) > 0
 
 
 def test_close_writes_cell_lineage(tmp_path):
