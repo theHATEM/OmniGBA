@@ -181,28 +181,46 @@ progress counter. Output goes to `data\raw\<game>\<timestamp>\`:
 ### Frames from TAS movies
 
 [TASVideos](https://tasvideos.org/) publishes tool-assisted speedruns as movie files: the buttons
-pressed on every frame, not video. `dataset/tas.py` replays BizHawk movies in BizHawk, saves every
-frame losslessly at 240x160, and keeps the varied ones with the same selection as the explorer. That
-gives whole playthroughs of other games with no per-game work. (Neither Dragon Ball GT
-Transformation nor Naruto: Ninja Council 2 has a TAS.)
+pressed on every frame, not video. `dataset/tas.py` replays them in an emulator, saves every frame
+losslessly at 240x160, and keeps the varied ones with the same selection as the explorer. That gives
+whole playthroughs of other games with no per-game work. (Neither Dragon Ball GT Transformation nor
+Naruto: Ninja Council 2 is on TASVideos.)
 
-| What | Where to get it |
-|---|---|
-| BizHawk | [BizHawk releases](https://github.com/TASEmulators/BizHawk/releases): extract the `win-x64` zip anywhere. Best is the version a movie was made with (its TASVideos page says which); newer versions usually work but can desync. |
-| GBA BIOS | a dump from your own console. BizHawk does not play GBA movies without one, and most movies need the official BIOS (SHA1 `300C20DF6731A33952DED8C436F7F186D25D3492`). |
-| Movies | from a game's publication page on TASVideos: the `.bk2` file, or the `.zip` the site downloads. Only movies made with BizHawk's mGBA core work; VBA-rr (`.vbm`) and GBAHawk (`.gbmv`) movies are skipped. |
-| ROMs | the exact ROMs the movies were made for, anywhere under `roms\` (found by checksum). |
+GBA movies there come in three kinds, all supported:
+
+| Movie | Made with | Played in |
+|---|---|---|
+| `.bk2` | BizHawk (mGBA core) | BizHawk |
+| `.gbmv` | GBAHawk | GBAHawk (a cut-down BizHawk; a `.gbmv` is a `.bk2` under another name) |
+| `.vbm` | VisualBoyAdvance-rr | BizHawk, after converting the movie the way BizHawk's own importer does. VBA-rr times things differently from mGBA, so these can desync partway; look at the last frames before using them. |
+
+Put these in the project folder (all are git-ignored), or pass their paths with `--bizhawk`,
+`--gbahawk` and `--bios`:
+
+| Folder | What | Where to get it |
+|---|---|---|
+| `bizhawk\` | `EmuHawk.exe` and the rest of BizHawk | [BizHawk releases](https://github.com/TASEmulators/BizHawk/releases), the `win-x64` zip |
+| `gbahawk\` | `GBAHawk.exe` and the rest of GBAHawk | [GBAHawk releases](https://github.com/alyosha-tas/GBAHawk/releases) |
+| `BIOS\` | `gba_bios.bin` | a dump from your own console. The emulators do not play GBA movies without a BIOS, and most movies need the official one (SHA1 `300C20DF6731A33952DED8C436F7F186D25D3492`). |
+
+Movies come from a game's publication page on TASVideos (the movie file, or the `.zip` the site
+downloads). Their ROMs must be the exact versions the movies were made for, anywhere under `roms\`
+(found by checksum; for `.vbm` movies by game code and title).
 
 ```powershell
-python -m dataset.tas --bizhawk "C:\BizHawk\EmuHawk.exe" --bios "C:\bios\gba_bios.bin" "C:\tas"
+python -m dataset.tas "C:\tas"
 ```
 
-Movies can be given one by one or as folders. Output goes to `data\raw\<game>\tas_<movie name>\`
-with the same files as the explorer's (no `cells.jsonl`); `frames.jsonl` records the movie frame of
-each saved frame and `run.json` the movie, ROM and BizHawk versions. Movies already done are skipped,
-and a movie that cannot be played is skipped with the reason (missing ROM, different BIOS, other
-emulator). BizHawk's window shows while it runs; it uses a settings file of its own, so your BizHawk
-settings are not changed. A 10-minute movie takes under 3 minutes.
+Movies can be given one by one or as folders. Output goes to
+`data\raw\<game>\tas_<movie name>_<extension>\` with the same files as the explorer's (no
+`cells.jsonl`); `frames.jsonl` records the movie frame of each saved frame and `run.json` the movie,
+ROM and emulator versions. Movies already done are skipped, and a movie that cannot be played is
+skipped with the reason (missing ROM, different BIOS, no emulator for it). Older movies usually play
+fine in newer emulator versions (a BizHawk 2.9.1 and a GBAHawk 1.6 movie both reached their endings
+in BizHawk 2.11.1 and GBAHawk 3.0.0); if one goes wrong partway, use the version on its TASVideos page.
+The emulator's window shows while it runs; it uses a settings file of its own and keeps save files in a
+temporary folder, so your emulator folders are not changed. Speed: BizHawk about 225 movie frames a
+second, GBAHawk about 75 (a 13-minute movie takes about 10 minutes).
 
 ### Running the tests
 
@@ -218,11 +236,11 @@ Tests that need the emulator core and a ROM are skipped when those files are mis
 $env:GBA_SLOW_TESTS = "1"; python -m pytest tests/test_routes.py
 ```
 
-The test that plays a movie in real BizHawk needs the paths of `EmuHawk.exe` and a GBA BIOS file
-(any BIOS works for it):
+The tests that play a movie in the real emulators need the paths of `EmuHawk.exe`, `GBAHawk.exe` and
+a GBA BIOS file (any BIOS works for them):
 
 ```powershell
-$env:GBA_BIZHAWK = "C:\BizHawk\EmuHawk.exe"; $env:GBA_BIOS = "C:\bios\gba_bios.bin"; python -m pytest tests/test_tas.py
+$env:GBA_BIZHAWK = "bizhawk\EmuHawk.exe"; $env:GBA_GBAHAWK = "gbahawk\GBAHawk.exe"; $env:GBA_BIOS = "BIOS\gba_bios.bin"; python -m pytest tests/test_tas.py
 ```
 
 ## Troubleshooting

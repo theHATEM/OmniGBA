@@ -17,8 +17,8 @@ one** (distillation), using frames collected from the two games we care about.
 | Player | `play_gba.py`, `fast_video.py`, `discard_audio.py` | Works. Game at 60 fps. |
 | Upscaler | `upscale_model.py` (ncnn, Vulkan), `upscale_process.py` (separate process, shared memory) | Works. See numbers below. |
 | Frame collection | `dataset/` (explore, archive, novelty, inputs, recorder, cheats, routes, progress, emulator) | Works; coverage still improving (see "Open issues"). |
-| Frames from TAS movies | `dataset/tas.py` | Works with BizHawk; not yet run on a real TAS (see below). |
-| Tests | `tests/` (pytest) | 100 pass; 1 slow test opt-in, 1 needs BizHawk (env vars). |
+| Frames from TAS movies | `dataset/tas.py` | Works for `.bk2`, `.gbmv`, `.vbm`; real `.bk2` and `.gbmv` TASes verified in sync (see below). |
+| Tests | `tests/` (pytest) | 111 pass; 1 slow test opt-in, 2 need BizHawk/GBAHawk (env vars). |
 | Training | nothing yet | Design agreed (below). |
 
 Setup and usage are in `README.md`. The emulator core, models and ROMs are not in git
@@ -119,47 +119,77 @@ seed 0:
 
 ## Frames from TAS movies (`dataset/tas.py`)
 
-A TAS movie is the buttons pressed on every frame, not video. `dataset/tas.py` replays BizHawk
-movies (`.bk2`, or the `.zip` TASVideos downloads) in BizHawk, saves every frame as a lossless
-240x160 PNG, and passes them through `FrameRecorder` with the explorer's settings (8x6x4 screen
-groups, 2 per group, min diff 4). Output: `data\raw\<game>\tas_<movie name>\`, same files as the
-explorer; `frames.jsonl` has `movie_frame`, `run.json` the movie, ROM and BizHawk versions.
+A TAS movie is the buttons pressed on every frame, not video. `dataset/tas.py` replays movies in an
+emulator, saves every frame as a lossless 240x160 PNG, and passes them through `FrameRecorder` with
+the explorer's settings (8x6x4 screen groups, 2 per group, min diff 4). Output:
+`data\raw\<game>\tas_<movie name>_<extension>\`, same files as the explorer; `frames.jsonl` has
+`movie_frame`, `run.json` the movie, ROM and emulator versions.
 
 ```powershell
-python -m dataset.tas --bizhawk "C:\BizHawk\EmuHawk.exe" --bios "C:\bios\gba_bios.bin" "C:\tas"
+python -m dataset.tas "C:\tas"
 ```
 
-- Why: whole playthroughs of other GBA games, exact frames, no per-game work. Neither of our two games
-  has a TAS (TASVideos has Naruto: Ninja Council 1 only), so this only adds other games, which the
-  training plan above does not include yet (decide before using it).
-- Needs per movie: the ROM with the SHA1 in the movie header (searched under `roms\`), a GBA BIOS
-  (BizHawk refuses to play GBA movies without one; most movies name the official BIOS by SHA1
-  `300C20DF6731A33952DED8C436F7F186D25D3492` and are checked against it), and ideally the BizHawk
-  version the movie was made with (`emuVersion` in the header; a mismatch only prints a note).
-- Only movies made with BizHawk's mGBA core: BizHawk 2.11.1 ships only `mgba.dll` for GBA. TASVideos
-  GBA movies also come as VBA-rr `.vbm` and GBAHawk `.gbmv` files; those are skipped with a message.
-- Verified with BizHawk 2.11.1, the open-source Cult-of-GBA BIOS (any BIOS works when the movie names
-  none) and a 36,053-frame movie of random input on Dragon Ball GT made from `InputPolicy`: every
-  frame dumped at 240x160, 2,375 kept, 161 s in total (~225 movie frames/s); the contact sheet showed
-  logos, title, intro, star map and fights. Three real TASVideos downloads (a `.bk2` without its ROM,
-  a `.vbm`, a `.gbmv`) were skipped with the right reasons. Not yet run on a real TAS with the
-  official BIOS, so sync over a whole movie is untested.
+Defaults: `bizhawk\EmuHawk.exe` (BizHawk 2.11.1), `gbahawk\GBAHawk.exe` (GBAHawk 3.0.0) and
+`BIOS\gba_bios.bin` (official BIOS) in the project folder, all git-ignored.
 
-BizHawk automation gotchas (all handled in `dump_movie`; any modal dialog would block a run until the
+- Why: whole playthroughs of other GBA games, exact frames, no per-game work. Neither of our two games
+  is on TASVideos at all (not even user files), so this only adds other games, which the training plan
+  above does not include yet (decide before using it).
+- Three movie kinds on TASVideos (first page of GBA publications: 68 `.bk2`, 22 `.vbm`, 10 `.gbmv`):
+  - `.bk2` (BizHawk, mGBA core): played in BizHawk. BizHawk 2.11.1 has only mGBA for GBA.
+  - `.gbmv` (GBAHawk): played in GBAHawk. GBAHawk is a cut-down BizHawk by Alyosha; a `.gbmv` is a
+    `.bk2` under another name with core `GBAHawk` and `P1 Up|...|P1 Power` input columns.
+  - `.vbm` (VBA-rr): converted to an mGBA `.bk2` in Python (port of BizHawk's `VbmImport`; BizHawk's
+    command line cannot take a `.vbm`, it opens every `--movie` as a `.bk2` first) and played in BizHawk.
+    The ROM is found by game code and internal title (a `.vbm` has no ROM hash). Unlike BizHawk's
+    importer, the BIOS intro is kept when the movie was recorded with it; VBA resets become Power.
+- Needs per movie: the ROM (by the SHA1 in the header, searched under `--roms`), a GBA BIOS (the
+  emulators refuse GBA movies without one; most movies name the official BIOS
+  `300C20DF6731A33952DED8C436F7F186D25D3492` and are checked against it), and ideally the emulator
+  version the movie was made with (a mismatch only prints a note; GBAHawk movies often say
+  "Version 1.0.0", which is not the real version).
+
+Verified (2026-10-08, official BIOS, homebrew ROMs from the movies' TASVideos pages and Homebrew Hub):
+
+| Movie | Made with | Played in | Result |
+|---|---|---|---|
+| Dangerous Xmas "all gifts" (#5770, `.bk2`, 8,639 frames) | BizHawk 2.9.1 | BizHawk 2.11.1 | In sync to the end: "THE END" and score screen; 2,267 frames kept, 95 s |
+| Anguna (#5531, `.gbmv`, 46,885 frames) | GBAHawk 1.6 | GBAHawk 3.0.0 | In sync to the end: dragon beaten, ending text, credits; ~77 frames/s |
+| Same random Dragon Ball GT input as `.bk2` and as `.vbm` (18,104 frames) | (made here) | BizHawk 2.11.1 | All 18,104 frames identical, so the converter maps buttons right |
+
+- Not verified: a real VBA-rr movie. Every GBA `.vbm` on TASVideos is for a commercial game (no
+  homebrew `.vbm` exists), and VBA-rr's timing differs from mGBA's, so real `.vbm` movies may well
+  desync. Check the last frames of each one before using its frames.
+- BizHawk and GBAHawk are deterministic here: the same movie dumped twice gave identical frames.
+
+Emulator automation gotchas (all handled in `dump_movie`; any modal dialog blocks a run until the
 timeout, which then prints the command to run by hand):
 
-- Command: `EmuHawk.exe --config <ini> --movie <bk2> --dump-type imagesequence --dump-name
-  <dir>\f.png --dump-close <rom>` (ROM last). Frames come out as `f_0.png`, `f_1.png`, ...; with no
-  `--dump-length` the dump is as long as the movie's input log, then BizHawk quits.
+- Command: `<exe> --config=<ini> --movie=<file> --dump-type=imagesequence --dump-name=<dir>\f.png
+  --dump-length=<movie frames> --dump-close <rom>` (ROM last). GBAHawk's parser only knows the
+  `--flag=value` form; BizHawk takes it too. Frames come out as `f_0.png`, `f_1.png`, ...
+- `--dump-length` is needed for GBAHawk: its command-line code never loads the movie's length, so
+  without it the dump runs forever (seen: 108k frames for a 47k-frame movie). BizHawk works it out.
+- GBAHawk always dumps through a "video stretcher" (no audio-sync switch), so a frame may now and then
+  be repeated or dropped; harmless for training frames.
 - The dump folder must exist; otherwise saving the first frame fails with an error dialog.
-- Our own config file (JSON) per run: `LastWrittenFrom` must equal BizHawk's version (from
-  EmuHawk.exe's ProductVersion, minus the `+commit` part) or a version dialog appears; the BIOS goes
-  in `FirmwareUserSpecifications["GBA+Bios"]`; `Unthrottled: true` (otherwise 60 fps);
-  `VideoWriterAudioSync: false` (otherwise frames are dropped or repeated to match the sound).
-  BizHawk rewrites the file in full on exit.
+- Own config file (JSON) per run:
+  - `LastWrittenFrom` must equal the emulator's version, or a version dialog appears. GBAHawk's .exe
+    does not carry its version (ProductVersion says 1.0.0), so `emulator_version` starts the emulator
+    once with an empty config and a Lua script that runs `client.exit()`, and reads the version from
+    the config it saves on exit.
+  - BIOS in `FirmwareUserSpecifications["GBA+Bios"]`, `Unthrottled: true` (otherwise 60 fps),
+    `VideoWriterAudioSync: false` (BizHawk would drop or repeat frames to match the sound).
+  - `PathEntries` sets the GBA base folder to the temporary work folder. Without it the emulators
+    write save RAM into `<emulator>\GBA\SaveRAM\` (it does not affect movie playback, but it clutters
+    the install).
+  - The emulator rewrites the file in full on exit, so one config per run in the temporary folder.
 - No BIOS gives the dialog "A BIOS is required for deterministic recordings!".
-- ROMs are matched by SHA1 before starting BizHawk, so it never sees a ROM that differs from the
-  movie's (what it does then was not tested; it may well prompt too).
+- A movie without a `Core` line makes BizHawk ask which core to use; converted movies always set it.
+- BizHawk reads the input columns from the `LogKey` line; a wrong `LogKey` silently misreads buttons.
+- ROMs are matched before starting the emulator. A `.bk2` whose SHA1 differs from the loaded ROM's
+  plays without asking (only `.tasproj` files prompt).
+- Homebrew ROMs often have an empty game code; their output folder is named after the ROM file.
 
 ## Open issues and next steps (in suggested order)
 
@@ -177,9 +207,8 @@ timeout, which then prints the command to run by hand):
    or flip exactly when a known event happens (see the game facts below).
 4. Run longer collections, look at contact sheets, check the balance.
 5. **TAS movies for other games (optional).** Decide whether other games belong in the training data.
-   If so: dump the official BIOS from a console, collect `.bk2` movies made with the mGBA core and the
-   matching ROMs, run `dataset.tas` and check a whole movie stays in sync (contact sheet of the last
-   minutes: the run should reach the ending).
+   If so: collect movies and their exact ROMs, run `dataset.tas`, and check each movie reached its
+   ending (contact sheet of the last minutes), especially `.vbm` ones.
 6. Generate teacher targets (x2, fp32, full frames), build the split, write the training script
    (needs CUDA PyTorch), then evaluate and export as planned above.
 
@@ -240,9 +269,11 @@ timeout, which then prints the command to run by hand):
   `Downloads\ROMS_FOLDER` and were copied to `roms\rom_d\`.
 - Tests: `pip install -r requirements-dev.txt`, then `python -m pytest`. Tests needing the core or a
   ROM skip when those are missing. `GBA_SLOW_TESTS=1` enables the Naruto campaign test (~1 min).
-  `GBA_BIZHAWK` (path of EmuHawk.exe) plus `GBA_BIOS` (any GBA BIOS file) enable the real BizHawk test.
-- BizHawk is not installed permanently on the laptop; it was tested from a temporary download of
-  the 2.11.1 release (`BizHawk-2.11.1-win-x64.zip`, unsigned, runs without installing).
+  `GBA_BIZHAWK` (path of EmuHawk.exe), `GBA_GBAHAWK` (path of GBAHawk.exe) and `GBA_BIOS` (any GBA
+  BIOS file) enable the real emulator tests (their windows show for a few seconds).
+- On the laptop: `bizhawk\` (BizHawk 2.11.1), `gbahawk\` (GBAHawk 3.0.0, from its GitHub release
+  `GBAHawk.v3.0.0.zip`) and `BIOS\gba_bios.bin` (official, SHA1 `300C20DF...`) are in the project
+  folder and git-ignored. Both emulators are unsigned and run without installing.
 
 ## Conventions
 
