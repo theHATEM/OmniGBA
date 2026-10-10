@@ -1,0 +1,13 @@
+BizHawk plays the .bk2 and .vbm TAS movies (dataset/tas.py).
+
+Download (version 2.11.1, the one tested):
+https://github.com/TASEmulators/BizHawk/releases/download/2.11.1/BizHawk-2.11.1-win-x64.zip
+
+All releases:
+https://github.com/TASEmulators/BizHawk/releases
+
+Extract the zip into this folder, so that EmuHawk.exe is at bizhawk\EmuHawk.exe.
+
+If EmuHawk.exe does not start, install BizHawk's prerequisites (.NET Framework 4.8 and the
+Visual C++ runtime) with the installer in this zip:
+https://github.com/TASEmulators/BizHawk-Prereqs/releases/download/2.4.8_1/bizhawk_prereqs_v2.4.8_1.zip

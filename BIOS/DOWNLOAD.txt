@@ -1,0 +1,11 @@
+The emulators need a GBA BIOS to play TAS movies (dataset/tas.py). Put it here as gba_bios.bin.
+
+Official BIOS (needed by almost every TASVideos movie):
+There is no legal download. It is Nintendo's code, so dump it from your own console.
+Expected file: 16384 bytes, SHA1 300C20DF6731A33952DED8C436F7F186D25D3492.
+
+Free replacement BIOS (Cult-of-GBA, open source):
+https://raw.githubusercontent.com/Cult-of-GBA/BIOS/master/bios.bin
+Project page: https://github.com/Cult-of-GBA/BIOS
+It is enough for the real-emulator tests (tests/test_tas.py), but movies recorded with the
+official BIOS go out of sync with it, so dataset/tas.py skips them.

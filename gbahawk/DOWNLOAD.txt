@@ -1,0 +1,9 @@
+GBAHawk plays the .gbmv TAS movies (dataset/tas.py).
+
+Download (version 3.0.0, the one tested):
+https://github.com/alyosha-tas/GBAHawk/releases/download/v3.0.0/GBAHawk.v3.0.0.zip
+
+All releases:
+https://github.com/alyosha-tas/GBAHawk/releases
+
+Extract the zip into this folder, so that GBAHawk.exe is at gbahawk\GBAHawk.exe.

@@ -7,6 +7,9 @@
 *.pyc
 **/__pycache__
 
-BIOS/
-BizHawk/
-GBAHawk/
+BIOS/*
+!BIOS/DOWNLOAD.txt
+BizHawk/*
+!BizHawk/DOWNLOAD.txt
+gbahawk/*
+!gbahawk/DOWNLOAD.txt
