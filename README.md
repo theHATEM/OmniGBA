@@ -128,7 +128,8 @@ Prints the time per frame. On a GTX 1660 Ti: x2 about 13 ms, x4 about 20 ms.
 | `upscale_model.py` | the Real-ESRGAN model on the GPU (ncnn) |
 | `upscale_process.py` | runs the model in a separate process; frames pass through shared memory |
 | `dataset/` | automated frame collection for training a smaller upscaler (see below) |
-| `tests/` | tests for `dataset/` |
+| `agent/` | reinforcement learning test on Dragon Ball GT (see below) |
+| `tests/` | tests for `dataset/` and `agent/` |
 
 ## Collecting training frames
 
@@ -222,6 +223,48 @@ The emulator's window shows while it runs; it uses a settings file of its own an
 temporary folder, so your emulator folders are not changed. Speed: BizHawk about 225 movie frames a
 second, GBAHawk about 75 (a 13-minute movie takes about 10 minutes).
 
+### Reinforcement learning test (Dragon Ball GT)
+
+`agent/` tests whether a trained player beats the explorer's random input at getting through a
+stage. A small network (NatureCNN, 2.2M parameters) learns with PPO
+([Stable-Baselines3](https://stable-baselines3.readthedocs.io/)) on 8 emulators at once:
+
+- **Start:** the planet 0 route seed (`data\seeds\dbgt\level00.state`, made by the explorer's first
+  run, or by the first training run), with the explorer's cheats, so the fighter never dies. Each
+  episode is 2 game minutes.
+- **Sees:** the screen in grey at half size (120x80), the last 4 steps stacked.
+- **Presses:** the d-pad (none or one of 8 directions) and A, B, L, R, each on or off, held for 4
+  frames. Never Start (pause menu) or Select.
+- **Reward:** points scored / 100 (about 0.5 per hit) plus new ground: pixels the camera got further
+  right than before in the episode, / 16. The screen only scrolls once an enemy wave is beaten, so
+  points drive fighting and new ground drives moving on.
+
+Install PyTorch, then the rest (`requirements-rl.txt` has the GPU command for the training PC):
+
+```powershell
+pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements-rl.txt
+```
+
+Train, then compare the model with random play from the same start over the same game time:
+
+```powershell
+python -m agent.train --timesteps 1000000
+python -m agent.evaluate --model data\rl\<timestamp>\model.zip --minutes 5 --episodes 5
+```
+
+A timestep is one action (4 frames), so 1,000,000 are about 18 hours of game time; on a laptop CPU
+(8 emulators) that took about 1.6 hours, and the evaluation above about 8 minutes. Training writes
+to `data\rl\<timestamp>\`: `model.zip`, `checkpoints\`, `progress.csv` (the training log;
+`dbgt/score`, `dbgt/ground` and `dbgt/waves` are the episode means) and `monitor\` (one line per
+episode). Ctrl+C stops early and still saves the model. `--envs` sets the number of emulators,
+`--root level03` starts from another planet, `--device cuda` trains on the GPU.
+
+`agent.evaluate` plays the model, the explorer's random bursts and uniform random actions (a model
+that learned nothing), and prints the means of points, new ground, waves beaten, scenes and new
+graphics tiles. It writes `eval.json` and a contact sheet per play style (`eval_ppo.png`, ...; one
+frame every 10 game seconds of the first episode) next to the model.
+
 ### Running the tests
 
 ```powershell
@@ -229,7 +272,8 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-Tests that need the emulator core and a ROM are skipped when those files are missing. One slow test
+Tests that need the emulator core and a ROM are skipped when those files are missing, and the `agent/`
+tests when `requirements-rl.txt` is not installed. One slow test
 (playing Naruto's first chapter, about a minute) only runs with `GBA_SLOW_TESTS` set:
 
 ```powershell

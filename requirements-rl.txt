@@ -1,0 +1,8 @@
+# Reinforcement learning (agent/), on top of requirements.txt. PyTorch comes first, from its own index:
+#   CPU only:                 pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+#   NVIDIA GPU (GTX 1660 Ti): pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu126
+# then: pip install -r requirements-rl.txt
+-r requirements.txt
+torch==2.14.1
+gymnasium==1.4.0
+stable-baselines3==2.9.0

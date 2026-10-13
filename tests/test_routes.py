@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from dataset.inputs import A, START
-from dataset.routes import chapter_seeds, load_or_make_seeds, play, press
+from dataset.routes import chapter_seeds, load_or_make_seeds, play, press, route_seeds
 
 
 class StepLog:
@@ -119,6 +119,11 @@ def test_seeds_are_made_once_then_loaded_from_disk(tmp_path):
     assert first == second == [("level00", b"state-0"), ("level01", b"state-1")]
     assert len(calls) == 1
     assert sorted(p.name for p in tmp_path.iterdir()) == ["level00.state", "level01.state"]
+
+
+def test_route_seeds_on_disk_are_loaded_without_starting_the_game(tmp_path):
+    (tmp_path / "level00.state").write_bytes(b"saved")
+    assert route_seeds("no-core.dll", "no-rom.gba", "BT4E", tmp_path) == [("level00", b"saved")]
 
 
 CORE = Path("core/mgba_libretro.dll")

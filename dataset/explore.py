@@ -166,7 +166,7 @@ def main() -> None:
     from dataset.cheats import GAMES, cheats_for, rom_game_code
     from dataset.emulator import HeadlessGBA
     from dataset.progress import progress_for
-    from dataset.routes import ROUTES, load_or_make_seeds
+    from dataset.routes import ROUTES, route_seeds
 
     ap = argparse.ArgumentParser(description="Collect GBA frames by automated exploration")
     ap.add_argument("--rom", required=True)
@@ -191,16 +191,9 @@ def main() -> None:
     seeds = []
     if code in ROUTES and not args.no_routes:
         seed_dir = Path(args.seeds) / game
-
-        def route():
-            # routes are timed with the game's cheats on
-            with HeadlessGBA(args.core, args.rom) as route_emu:
-                route_emu.apply_cheats(cheats_for(code))
-                yield from ROUTES[code](route_emu, random.Random(0))
-
         if not any(seed_dir.glob("*.state")):
             print(f"making route seeds in {seed_dir} (first run for this game, can take a few minutes)")
-        seeds = load_or_make_seeds(seed_dir, route)
+        seeds = route_seeds(args.core, args.rom, code, seed_dir)
         print(f"{len(seeds)} route seeds: {', '.join(name for name, _ in seeds)}")
 
     out_dir = Path(args.out) / game / time.strftime("%Y%m%d_%H%M%S")

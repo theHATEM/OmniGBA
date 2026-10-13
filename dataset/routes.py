@@ -11,6 +11,7 @@ Generating the states takes a while (Naruto's chapters are reached by playing), 
 load_or_make_seeds keeps them on disk.
 """
 
+import random
 from pathlib import Path
 
 from dataset.inputs import A, START, InputPolicy
@@ -115,3 +116,17 @@ def load_or_make_seeds(seed_dir, route) -> list[tuple[str, bytes]]:
     for name, _ in seeds:
         (seed_dir / f"{name}.state.tmp").replace(seed_dir / f"{name}.state")
     return seeds
+
+
+def route_seeds(core, rom, code: str, seed_dir) -> list[tuple[str, bytes]]:
+    """The route seeds of the game with this code, from seed_dir, or played and saved there first."""
+    from dataset.cheats import cheats_for
+    from dataset.emulator import HeadlessGBA
+
+    def route():
+        # routes are timed with the game's cheats on
+        with HeadlessGBA(core, rom) as emu:
+            emu.apply_cheats(cheats_for(code))
+            yield from ROUTES[code](emu, random.Random(0))
+
+    return load_or_make_seeds(seed_dir, route)

@@ -1,7 +1,7 @@
 # Handoff
 
 Where the project stands and what to do next, so the work can continue in a new chat.
-Last updated 2026-10-08.
+Last updated 2026-10-12.
 
 ## Goal
 
@@ -9,6 +9,10 @@ OmniGBA plays GBA games (mGBA libretro core, driven from Python) and upscales th
 neural network in real time. The long-term goal is to run on phones. The current upscaler is too
 heavy for that, so the plan is to **train a much smaller "student" model that copies the current
 one** (distillation), using frames collected from the two games we care about.
+
+A second, newer goal: a model that plays the games, built like NVIDIA's NitroGen (behaviour cloning:
+screen in, buttons out, learned from recorded play). The reinforcement learning test below checks
+how far a trained player gets compared with random input.
 
 ## What exists today
 
@@ -18,8 +22,9 @@ one** (distillation), using frames collected from the two games we care about.
 | Upscaler | `upscale_model.py` (ncnn, Vulkan), `upscale_process.py` (separate process, shared memory) | Works. See numbers below. |
 | Frame collection | `dataset/` (explore, archive, novelty, inputs, recorder, cheats, routes, progress, emulator) | Works; coverage still improving (see "Open issues"). |
 | Frames from TAS movies | `dataset/tas.py` | Works for `.bk2`, `.gbmv`, `.vbm`; real `.bk2` and `.gbmv` TASes verified in sync (see below). |
-| Tests | `tests/` (pytest) | 111 pass; 1 slow test opt-in, 2 need BizHawk/GBAHawk (env vars). |
-| Training | nothing yet | Design agreed (below). |
+| Reinforcement learning test | `agent/` (env, train, evaluate), `requirements-rl.txt` | Works; PPO on Dragon Ball GT planet 0 clearly beats random input (see below). |
+| Tests | `tests/` (pytest) | 129 pass (~1 min); 1 slow test opt-in, 2 need BizHawk/GBAHawk (env vars). |
+| Upscaler training | nothing yet | Design agreed (below). |
 
 Setup and usage are in `README.md`. The emulator core, models and ROMs are not in git
 (`core/`, `models/`, `roms/`); collected data goes to `data/` (also not in git).
@@ -191,6 +196,59 @@ timeout, which then prints the command to run by hand):
   plays without asking (only `.tasproj` files prompt).
 - Homebrew ROMs often have an empty game code; their output folder is named after the ROM file.
 
+## Reinforcement learning test (`agent/`)
+
+Question: does a trained player get further through a stage than the explorer's random input? If so,
+reinforcement learning (RL) is worth adding on top of the behaviour cloning plan. Setup and commands
+are in `README.md`.
+
+- `agent/env.py`: `DbgtEnv`, a Gymnasium environment around `HeadlessGBA`. Starts from the planet 0
+  route seed (`route_seeds` in `dataset/routes.py`, shared with the explorer) with the explorer's
+  cheats, so the fighter never dies. Observation: grey 120x80 screen, 4 stacked. Action:
+  `MultiDiscrete([9, 2, 2, 2, 2])` = d-pad (none or one of 8 directions) and A, B, L, R, held 4
+  frames; never Start or Select. Episodes are 2 game minutes (1800 steps), never ended early.
+- Reward (`DbgtReward`): score / 100 plus new ground (camera x beyond the episode's best so far) / 16.
+  Also counts waves beaten (rising edges of the "GO ->" flag) for logging only.
+- `agent/train.py`: PPO (Stable-Baselines3), NatureCNN (2.2M parameters), 8 emulators in subprocesses,
+  Atari-style settings (lr 2.5e-4, 128 steps per emulator per update, 4 epochs, clip 0.1, entropy
+  0.01). Logs episode means of score, ground and waves to `progress.csv`; checkpoint every 100k steps.
+- `agent/evaluate.py`: plays the model, the explorer's random bursts (exactly as `Explorer.iterate`
+  picks them) and uniform random actions (a model that learned nothing) from the same start, and
+  reports points, new ground, waves, scenes (`scene_key`) and new graphics tiles, plus contact sheets.
+
+First run (2026-10-12, laptop CPU, 1,000,000 steps = about 18 hours of game time): 5,785 s (1.6 hours),
+172 steps/s on average (237 at the start, slowing as the CPU heated). `ep_rew_mean` rose 119 -> 145
+(300k) -> 166 (600k) -> 169 (1M), so it had mostly levelled off; policy entropy 4.96 -> 4.42 (4.97 is
+fully random). Model in `data\rl\20261012_175329\` (git-ignored).
+
+Means over 5 episodes from the planet 0 start:
+
+| Play style | Game minutes | Points | New ground (px) | Waves beaten | Scenes |
+|---|---|---|---|---|---|
+| PPO, 300k steps (4 episodes) | 2 | 11,603 | 260 | 1.0 | 15.5 |
+| PPO, 1M steps | 2 | 13,903 | 411 | 1.0 | 18.6 |
+| Explorer's random bursts | 2 | 10,690 | 26 | 0.2 | 5.0 |
+| Uniform random, 4-frame steps | 2 | 10,918 | 112 | 1.0 | 9.2 |
+| PPO, 1M steps | 5 | 31,190 | 1,012 | 2.6 | 46.0 |
+| Explorer's random bursts | 5 | 18,340 | 388 | 1.0 | 21.6 |
+| Uniform random, 4-frame steps | 5 | 16,148 | 415 | 1.6 | 25.2 |
+
+- Within the 2 minutes it trained on, every play style but the explorer beats wave 1; the model gets
+  further right and scores more.
+- Over 5 minutes (longer than any training episode) the model keeps going: in the first episode's
+  contact sheet it beats wave 1, then the wave with the purple robot mid-boss, and reaches an area
+  with gun turrets (score 28,336). Its points and ground are about double either kind of random input.
+- The explorer's long random bursts are worst at fighting: they beat wave 1 in only 1 of 5 two-minute
+  episodes.
+- At 300k steps the contact sheet showed the model idling and firing after the "GO ->" arrow instead of
+  walking right; by 1M it walks on.
+- Evaluating 3 play styles x 5 episodes x 5 game minutes takes about 8 minutes.
+
+Ideas not tried yet: longer training episodes, or starting episodes from explorer cells further into
+the stage (2-minute episodes spend most of their time on wave 1); more steps on the GTX 1660 Ti
+(`--device cuda`); other planets (`--root levelNN`); recording the model's play (frames plus
+buttons) as extra training data for the behaviour cloning model.
+
 ## Open issues and next steps (in suggested order)
 
 1. **Run time per stage.** Getting through Dragon Ball GT stages needs on the order of an hour of game
@@ -265,8 +323,13 @@ timeout, which then prints the command to run by hand):
 - The game has been run with `D:\development\python\GBA\.venv` (Python 3.12; has ncnn, libretro.py,
   pygame). `README.md` describes creating a fresh `.venv` from `requirements.txt` (verified to work).
 - Second machine (laptop, Intel Core 5 120U, Intel graphics only, so no CUDA for training): `.venv` made
-  with Python 3.13.14 from `requirements-dev.txt`; all tests pass. The ROMs there are in
-  `Downloads\ROMS_FOLDER` and were copied to `roms\rom_d\`.
+  with Python 3.13.14 from `requirements-dev.txt`, plus CPU PyTorch and `requirements-rl.txt`; all
+  tests pass. The ROMs there are in `Downloads\ROMS_FOLDER` and were copied to `roms\rom_d\`.
+- Laptop: Windows Smart App Control is on. On 2026-10-11 it blocked the unsigned
+  `core\mgba_libretro.dll` and PyTorch's `torch_python.dll` (`WinError 4551`, "An Application Control
+  policy has blocked this file"); a day later both loaded fine. If it comes back, either turn Smart App
+  Control off (Windows Security > App & browser control; it cannot be turned back on without
+  reinstalling Windows) or run on the desktop PC.
 - Tests: `pip install -r requirements-dev.txt`, then `python -m pytest`. Tests needing the core or a
   ROM skip when those are missing. `GBA_SLOW_TESTS=1` enables the Naruto campaign test (~1 min).
   `GBA_BIZHAWK` (path of EmuHawk.exe), `GBA_GBAHAWK` (path of GBAHawk.exe) and `GBA_BIOS` (any GBA
