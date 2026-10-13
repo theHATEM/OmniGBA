@@ -1,7 +1,10 @@
 # Handoff
 
 Where the project stands and what to do next, so the work can continue in a new chat.
-Last updated 2026-10-12.
+Last updated 2026-10-13.
+
+**Next task:** see "Next task: GPU training and recording the best episode" (after the
+reinforcement learning test section).
 
 ## Goal
 
@@ -248,6 +251,151 @@ Ideas not tried yet: longer training episodes, or starting episodes from explore
 the stage (2-minute episodes spend most of their time on wave 1); more steps on the GTX 1660 Ti
 (`--device cuda`); other planets (`--root levelNN`); recording the model's play (frames plus
 buttons) as extra training data for the behaviour cloning model.
+
+## Next task: GPU training and recording the best episode
+
+Handoff written 2026-10-13 for the next session, on the desktop PC with the GTX 1660 Ti. Three parts,
+in this order: set up CUDA PyTorch and measure the speed; add a recording of the best episode the
+model plays during a training run (test-first); then start a long training run that uses it.
+
+### Part 1: set up the desktop
+
+1. Get the repo at commit `a662f61` or later (it has `agent/`). The core, the ROM and `data\` are not
+   in git: `core\mgba_libretro.dll` and `roms\rom_d\Dragon Ball GT - Transformation.gba` must be in
+   place (the game already ran on this PC; see "Environments"). The planet 0 start state
+   `data\seeds\dbgt\level00.state` is made by the first `agent.train` run if missing (a one-time wait
+   while it plays the route from power-on).
+2. Install PyTorch with CUDA **before** `requirements-rl.txt`; otherwise pip takes the CPU-only build
+   from PyPI:
+
+   ```powershell
+   pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu126
+   pip install -r requirements-rl.txt
+   ```
+
+   The `torch==2.14.1` line in `requirements-rl.txt` is satisfied by `2.14.1+cu126`, so pip keeps the
+   CUDA build. If a CPU build got in first, `pip uninstall torch` and repeat. The cu126 build needs an
+   NVIDIA driver for CUDA 12.6 or newer (`nvidia-smi` shows "CUDA Version"); update the driver if it
+   is older. The GTX 1660 Ti (Turing, compute capability 7.5) is supported by this build.
+3. Check:
+
+   ```powershell
+   python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+   python -m pytest tests/test_agent.py
+   ```
+
+   Expect `2.14.1+cu126 True NVIDIA GeForce GTX 1660 Ti`, and all 17 agent tests passing.
+4. Measure the speed. The emulators run on the CPU (one process each; one alone does ~290 steps/s on
+   the laptop), the network on the GPU. Try `--envs` values around the number of physical CPU cores
+   (`(Get-CimInstance Win32_Processor).NumberOfCores`):
+
+   ```powershell
+   python -u -m agent.train --device cuda --envs 8 --timesteps 100000 --out data\rl\speed
+   ```
+
+   `time/fps` in the log is steps per second for all emulators together; `nvidia-smi` should list the
+   python process. The laptop did 172 steps/s on its CPU with 8 emulators, CPU at 100%. Pick the
+   `--envs` with the highest fps and keep it for the main run (it also sets the batch per update:
+   128 steps x emulators).
+
+### Part 2: record the best episode of a training run
+
+Goal: during and after a training run, `data\rl\<run>\best\` holds the single best episode any
+emulator played in the whole run, as a file that replays exactly, plus a video and a contact sheet
+made from it.
+
+Design:
+
+- **Record actions, not frames.** The emulator is deterministic and every episode starts from the
+  same state, so the start state plus each step's action reproduces the whole game (see
+  `test_same_actions_play_the_same_game`). An episode is 1,800-4,500 actions of 5 bytes; sending
+  frames back from 8 emulator processes would cost far more.
+- **Where:** a Stable-Baselines3 callback in `agent/train.py` next to `EpisodeStats`, e.g.
+  `BestEpisode(out_dir / "best", state, frames_per_step)`. In `_on_step`:
+  - `self.locals["actions"]` (shape `(n_envs, 5)`) holds the actions just taken;
+  - `self.locals["dones"]` says which emulators just finished an episode;
+  - `self.locals["infos"][i]["episode"]` holds that episode's Monitor stats (`r` reward, `l` length,
+    `score`, `ground`, `waves`).
+
+  Keep one action list per emulator and append every step's actions. When an emulator's episode
+  ends, compare its reward with the best so far, save it if higher, then clear that list. The step
+  that ends an episode belongs to the old episode; the next step is the first of the new one (SB3
+  resets automatically). Put the bookkeeping in a plain method (e.g. `add(actions, dones, infos)`)
+  so it can be tested without PPO.
+- **Best = highest episode reward** (`r`, the training objective: score / 100 + new ground / 16).
+  A tie keeps the earlier episode.
+- **Files:**
+  - `best\episode.npz` (`np.savez_compressed`): `actions` (uint8, steps x 5), `state` (the start
+    state, a ~16 KB compressed save state, so the file stands alone) and `frames_per_step`.
+  - `best\episode.json`: reward, score, ground, waves, steps, training timesteps so far
+    (`self.num_timesteps`), emulator index, root, ROM file name and cheats.
+  - Write both to a temporary name and then rename, so Ctrl+C never leaves half a file.
+  - Append a line per new best to `best\history.csv` (timesteps, reward, score, ground, waves), and
+    print one line, to show how the best improves over the run.
+- **Replay:** a new `agent/replay.py`, `python -m agent.replay data\rl\<run>\best\episode.npz`. It
+  works as follows:
+  - Make a fresh `DbgtEnv` with the same cheats, the saved state and `max_steps` = number of actions,
+    and play the actions.
+  - Check that score, ground and waves equal the recorded values. If they differ, stop with an
+    error: the recording is not reproducible.
+  - Write `episode.mp4`: every frame at 60 fps, scaled 3x with nearest neighbour to 720x480
+    (`cv2.VideoWriter`, `mp4v`).
+  - Write `episode.png`: a contact sheet with one frame every 10 s (`evaluate.contact_sheet`).
+  - For the video it needs every frame while keeping 4-frame steps (the reward and wave count sample
+    RAM once per step). So give `DbgtEnv` a way to hand out each frame of a step, such as an
+    optional callback called after every frame.
+  - Write frames to the video as they come instead of keeping them: 5 minutes is 18,000 frames
+    (~2 GB in memory).
+  - `agent.train`'s `main` runs the replay at the end of training, also after Ctrl+C.
+- Optional, for the behaviour cloning goal: a `--frames` flag on the replay that writes every frame
+  as PNG plus `buttons.csv` (frame number, button mask), a ready demonstration of good play.
+
+Tests first, in `tests/test_agent.py` (it already has the `env` fixture, `needs_game`, `needs_sb3`
+and the toy `Counter` env):
+
+1. Bookkeeping with made-up `actions`, `dones` and `infos` for 2 emulators: lists kept apart, only a
+   better episode replaces the saved one, the step that ends an episode is included.
+2. A saved episode replays: play ~300 random steps in `env`, save them, replay them in a **new**
+   `DbgtEnv` (fresh emulator), and get the same score, ground, waves and last frame. Training reuses
+   one emulator per process across episodes, so this checks that loading the state resets
+   everything the game uses.
+3. The replay writes a video with the right number of frames (`cv2.VideoCapture`,
+   `CAP_PROP_FRAME_COUNT`) and a contact sheet.
+4. Extend `test_training_runs_on_two_emulators_then_the_model_plays`: `best\episode.json` exists and
+   its reward equals the highest `r` in the monitor CSVs.
+
+Then check it for real: a 100k-step run, `agent.replay` on its best episode, and look at the video and
+the contact sheet. Add the replay command and the `best\` files to the README's reinforcement learning
+section.
+
+### Part 3: the long run
+
+```powershell
+python -u -m agent.train --device cuda --envs <N> --minutes 5 --timesteps 10000000
+```
+
+- `--minutes 5`: 2-minute episodes spent most of their time on wave 1, yet the 1M model went further
+  in 5-minute evaluations. Longer episodes let it practise the later parts of planet 0 (mid-boss,
+  turrets).
+- 10M steps is the usual Atari budget. Work out the hours from the measured fps first (at the
+  laptop's 172 steps/s it would be 16 hours). Checkpoints come every 100k steps. Ctrl+C stops the run
+  and still saves `model.zip`, and `best\` is kept.
+- Keep Windows from sleeping during the run, and do not run `play_gba.py` (it also uses the GPU) at
+  the same time.
+- From a Claude session, start it as a background command with its output going to a log file, as
+  the first run did. Follow `ep_rew_mean` and `dbgt/*` in the log or `progress.csv`, and
+  `best\history.csv`.
+
+After the run:
+
+```powershell
+python -m agent.evaluate --model data\rl\<run>\model.zip --minutes 5 --episodes 5
+```
+
+Compare with the first run's table above (PPO 1M over 5 minutes: 31,190 points, 1,012 ground,
+2.6 waves, 46 scenes) and watch `best\episode.mp4`. Then add the results to the "Reinforcement
+learning test" section: speed, learning curve, evaluation table and what the best episode reached.
+`agent.evaluate` loads models on the CPU, so a GPU-trained model can be evaluated on any machine.
 
 ## Open issues and next steps (in suggested order)
 
