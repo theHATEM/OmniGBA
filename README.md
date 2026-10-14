@@ -268,6 +268,23 @@ episode) and `best\` (below). Ctrl+C stops early and still saves the model. `--e
 of emulators, `--root level03` starts from another planet, `--minutes` sets the game time per
 episode, `--device cuda` trains on the GPU.
 
+`--reward progress` pays 1 each time the wave's enemies-left count drops, 10 per wave beaten and the
+same new ground, and nothing for points except 0.2 per scoring step while the count is 0 and the wave
+goes on (its last enemies are still on screen then, and the turret wave also needs its turrets
+destroyed). A model trained on points learned to keep enemies alive in long combos for more points
+instead of moving on. `--reward points` (the default) is the reward described above.
+
+`--practice STATE --practice-share 0.25` starts a quarter of the episodes from another save state, so
+the model practises a part of the stage it otherwise reaches only near the end of an episode. Make
+such a state from a recorded episode (e.g. a run's `best\episode.npz`) with `agent.starts`: it saves
+the state the recording reaches when a wave starts in the arena at a given camera position (planet
+0's gun-turret wave is at 1320). Practice episodes are logged as `dbgt_practice/*` in
+`progress.csv`, with `start` = 1 in the monitor CSVs, and never become the best episode.
+
+```powershell
+python -m agent.starts data\rl\<timestamp>\best\episode.npz --camera 1320 --out data\starts\dbgt\turrets.state
+```
+
 `--per-process 2` runs two emulators in each worker process (each from its own copy of the core,
 made in `core\copies\`), so `--envs 24 --per-process 2` uses 12 processes. On a 6-core / 12-thread
 laptop CPU with a GTX 1660 Ti that trained 17% faster than 12 emulators alone (~766 against ~655
@@ -276,9 +293,9 @@ same for 24 emulators as for 12.
 
 A stopped run continues in its own folder from its latest checkpoint (saved every 100,000 timesteps,
 or `model.zip` after Ctrl+C), with the settings in its `run.json`; the logs and `best\` continue too.
-Only `--envs`, `--per-process`, `--device`, `--batch-size` (PPO minibatch, default 256) and
-`--target-kl` (stop an update early once the policy changed that much) can be changed when resuming;
-the last values used carry on otherwise:
+Only `--envs`, `--per-process`, `--device`, `--batch-size` (PPO minibatch, default 256),
+`--target-kl` (stop an update early once the policy changed that much), `--practice` and
+`--practice-share` can be changed when resuming; the last values used carry on otherwise:
 
 ```powershell
 python -m agent.train --resume data\rl\<timestamp> --envs 24 --per-process 2

@@ -6,7 +6,7 @@ Compare play styles on Dragon Ball GT from the same start state over the same ga
     uniform   a random action every 4 frames, i.e. a model that learned nothing
 
 Each is scored on points, new ground (pixels the camera got further right), waves beaten,
-scenes (novelty.scene_key) and new graphics tiles (novelty.GraphicsTracker), checked
+enemies killed, scenes (novelty.scene_key) and new graphics tiles (novelty.GraphicsTracker), checked
 every 4 frames as the explorer does. A contact sheet per play style shows what it did.
 
     python -m agent.evaluate --model data\rl\<run>\model.zip --minutes 3 --episodes 5
@@ -118,7 +118,7 @@ def play(env: DbgtEnv, policy, seconds: float, sheet_every: float = 10.0):
         if info["frames"] % sheet_frames == 0:
             frames.append(env.emu.frame())
     stats = {"frames": info["frames"], "score": info["score"], "ground": info["ground"],
-             "waves": info["waves"], "scenes": len(scenes), "new_graphics": new_graphics}
+             "waves": info["waves"], "kills": info["kills"], "scenes": len(scenes), "new_graphics": new_graphics}
     return stats, frames
 
 
@@ -179,7 +179,7 @@ def main() -> None:
     (out / "eval.json").write_text(json.dumps({"model": args.model, "root": args.root,
                                                "minutes": args.minutes, "results": results}, indent=2))
     print(f"\nmean over {args.episodes} episodes of {args.minutes:g} game minutes from {args.root}:")
-    keys = ["score", "ground", "waves", "scenes", "new_graphics"]
+    keys = ["score", "ground", "waves", "kills", "scenes", "new_graphics"]
     print(f"{'':10s}" + "".join(f"{k:>14s}" for k in keys))
     for name, result in results.items():
         print(f"{name:10s}" + "".join(f"{result['mean'][k]:14.1f}" for k in keys))

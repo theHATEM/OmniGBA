@@ -60,13 +60,94 @@ def _iwram(score=0, camera=138, go_arrow=0):
     return iwram
 
 
-def _set(iwram, score=None, camera=None, go_arrow=None):
+def _set(iwram, score=None, camera=None, go_arrow=None, enemies_left=None):
     if score is not None:
         iwram[0x1D0C:0x1D10] = np.frombuffer(np.uint32(score).tobytes(), np.uint8)
     if camera is not None:
         iwram[0x24D8:0x24DA] = np.frombuffer(np.uint16(camera).tobytes(), np.uint8)
     if go_arrow is not None:
         iwram[0x1CEA] = go_arrow
+    if enemies_left is not None:
+        iwram[0x19B0] = enemies_left
+
+
+def _kills(reward, iwram, values):
+    """Steps through enemies-left values (or (enemies left, GO arrow) pairs); returns the kills counted."""
+    for value in values:
+        left, arrow = value if isinstance(value, tuple) else (value, 0)
+        _set(iwram, enemies_left=left, go_arrow=arrow)
+        reward.step()
+    return reward.kills
+
+
+def test_reward_counts_kills_as_the_enemies_left_go_down():
+    iwram = _iwram()
+    _set(iwram, enemies_left=8)
+    reward = DbgtReward(iwram)
+    reward.reset()
+    assert _kills(reward, iwram, [8, 7, 7, 5, 4]) == 4  # two in one step
+    assert DbgtReward(iwram).kills == 0
+
+
+def test_kills_ignore_the_counter_between_waves():
+    # values seen in a real game (planet 0): while the "GO ->" arrow shows and while walking to the
+    # next arena the counter holds unrelated values, then the next wave's enemies are set
+    iwram = _iwram()
+    _set(iwram, enemies_left=1)
+    reward = DbgtReward(iwram)
+    reward.reset()
+    between = [0, 120, (120, 1), (120, 1), (120, 0), 0, 4,  # wave 1 -> wave 2
+               3, 2, 1, 0, 128, (224, 1), (224, 0), 2,  # wave 2 -> wave 3
+               1, 0, 224, (192, 1), (192, 0), 9,  # wave 3 -> the turret wave
+               8, 0, 40, (40, 1), (40, 0), 0]  # (8 -> 0 is a reset, not 8 kills)
+    assert _kills(reward, iwram, between) == 1 + 4 + 2 + 1
+
+
+def test_progress_reward_pays_for_kills_waves_and_new_ground_not_points():
+    from agent.env import REWARDS
+
+    iwram = _iwram(score=1000, camera=200)
+    _set(iwram, enemies_left=3)
+    reward = DbgtReward(iwram, **REWARDS["progress"])
+    reward.reset()
+    _set(iwram, score=30_000)  # a long combo
+    assert reward.step() == 0.0
+    _set(iwram, enemies_left=2)
+    assert reward.step() == pytest.approx(1.0)  # a kill
+    _set(iwram, enemies_left=0)
+    assert reward.step() == pytest.approx(2.0)
+    _set(iwram, enemies_left=120, go_arrow=1)
+    assert reward.step() == pytest.approx(10.0)  # a wave beaten
+    _set(iwram, camera=232)
+    assert reward.step() == pytest.approx(2.0)  # 16 pixels = 1, as with the points reward
+
+
+def test_progress_reward_pays_hits_only_once_the_enemies_left_count_is_zero():
+    # the counter reaches 0 while the wave's last enemies are still on screen, and the turret wave
+    # also needs its turrets destroyed: a small reward per step that scores, whatever the points
+    # (combos would pay ever more for the same enemy), while the count is 0 and the wave goes on
+    from agent.env import REWARDS
+
+    iwram = _iwram(score=1000)
+    _set(iwram, enemies_left=1)
+    reward = DbgtReward(iwram, **REWARDS["progress"])
+    reward.reset()
+    _set(iwram, score=1600)
+    assert reward.step() == 0.0  # hitting an enemy
+    _set(iwram, score=2100, enemies_left=0)
+    assert reward.step() == pytest.approx(1.0)  # the count drops: 1, not the points
+    assert reward.step() == 0.0  # nothing scored
+    _set(iwram, score=2250)
+    assert reward.step() == pytest.approx(0.2)  # a hit on what is left
+    _set(iwram, score=2900)
+    assert reward.step() == pytest.approx(0.2)  # a combo hit pays the same
+    _set(iwram, score=3400, go_arrow=1, enemies_left=120)
+    assert reward.step() == pytest.approx(10.0)  # the wave beaten; no hits once the arrow shows
+    _set(iwram, score=3900, go_arrow=0)
+    assert reward.step() == 0.0  # walking on, the counter holding 120
+    _set(iwram, score=4400, enemies_left=0)
+    assert reward.step() == 0.0  # the counter just reset to 0 in the next arena
+    assert (reward.kills, reward.cleared_hits) == (1, 2)
 
 
 def test_reward_counts_points_scored():
@@ -179,6 +260,32 @@ def test_random_play_scores_and_rewards_add_up(env):
     assert total == pytest.approx(info["score"] / 100 + info["ground"] / 16)
 
 
+@needs_game
+def test_random_play_kills_and_the_progress_reward_adds_up():
+    from agent.env import DbgtEnv
+    from dataset.cheats import cheats_for
+
+    env = DbgtEnv(CORE, _dbgt_rom(), SEED.read_bytes(), cheats=cheats_for("BT4E"), max_steps=2250,
+                  reward="progress")
+    try:
+        _, start = env.reset()
+        assert start["kills"] == 0
+        masks = InputPolicy(random.Random(0)).burst(env.max_steps * 4, allow_start=False)
+        total, truncated, step = 0.0, False, 0
+        while not truncated:
+            _, reward, _, truncated, info = env.step(mask_to_action(masks[step * 4]))
+            total += reward
+            step += 1
+        enemies_left = int(env.emu.memory(0x03000000)[0x19B0])
+    finally:
+        env.close()
+    # 2.5 minutes of this random play kill some of planet 0's first wave (8 enemies), not all of it
+    assert info["waves"] == 0
+    assert 0 < info["kills"] < 8
+    assert info["kills"] + enemies_left == 8
+    assert total == pytest.approx(info["kills"] + 10 * info["waves"] + info["ground"] / 16)
+
+
 # --- evaluation and training ----------------------------------------------------------
 
 
@@ -235,6 +342,7 @@ def test_play_measures_progress_and_samples_frames(env):
     stats, frames = play(env, ExplorerInput(random.Random(0)), seconds=150, sheet_every=10)
     assert stats["frames"] == 150 * 60
     assert stats["score"] > 0
+    assert stats["kills"] > 0
     assert stats["scenes"] >= 1
     assert stats["new_graphics"] > 0
     assert len(frames) == 15
@@ -268,6 +376,96 @@ def test_training_runs_on_two_emulators_then_the_model_plays(tmp_path, env):
     assert best["reward"] == max(rewards)
     env.close()  # one mGBA core per process
     replay(CORE, _dbgt_rom(), load_episode(tmp_path / "best" / "episode.npz"))  # raises if it plays differently
+
+
+# --- practice starts ------------------------------------------------------------------------
+
+
+@needs_game
+def test_state_at_saves_the_state_a_recording_reaches_when_the_condition_first_holds(tmp_path, env):
+    from agent.env import DbgtEnv
+    from agent.replay import load_episode
+    from agent.starts import state_at
+    from dataset.cheats import cheats_for
+
+    _record_random_play(env, tmp_path, steps=300, seed=5)
+    episode = load_episode(tmp_path / "episode.npz")
+    state, info = state_at(CORE, _dbgt_rom(), episode, lambda info: info["frames"] >= 400)
+    assert info["frames"] == 400
+
+    # the game RAM after 100 steps of the recording, and after loading the saved state in a new
+    # emulator (the screen is only redrawn by the next frame after a state load, so compare RAM)
+    rams = []
+    for start, actions in ((episode["state"], episode["actions"][:100]), (state, [])):
+        check = DbgtEnv(CORE, _dbgt_rom(), start, cheats=episode["cheats"])
+        check.reset()
+        for action in actions:
+            check.step(action)
+        rams.append(check.emu.memory(0x03000000).copy())
+        check.close()
+    assert np.array_equal(*rams)
+    with pytest.raises(ValueError):
+        state_at(CORE, _dbgt_rom(), episode, lambda info: False)
+
+
+@needs_game
+def test_episodes_start_from_the_practice_state_with_its_share(tmp_path, env):
+    from agent.env import DbgtEnv
+    from dataset.cheats import cheats_for
+
+    env.reset()
+    for _ in range(50):
+        env.step(env.action_space.sample())
+    later, later_ram = env.emu.save_state(), env.emu.memory(0x03000000).copy()
+    env.close()
+
+    practice = DbgtEnv(CORE, _dbgt_rom(), SEED.read_bytes(), cheats=cheats_for("BT4E"), practice=later,
+                       practice_share=0.25)
+    starts = []
+    try:
+        for i in range(400):
+            obs, info = practice.reset(seed=1 if i == 0 else None)
+            starts.append(info["start"])
+            ram = practice.emu.memory(0x03000000)
+            assert np.array_equal(ram, later_ram) == (info["start"] == 1)
+            assert info["ground"] == 0  # new ground counts from where the episode starts
+        *_, info = practice.step(practice.action_space.sample())
+        assert info["start"] == starts[-1]  # every step says which start its episode had
+    finally:
+        practice.close()
+    assert set(starts) == {0, 1}
+    assert 0.18 < starts.count(1) / len(starts) < 0.32
+
+
+@needs_sb3
+def test_monitor_files_of_a_resumed_run_get_the_columns_added_since(tmp_path):
+    from agent.train import add_monitor_columns
+
+    old = tmp_path / "0.monitor.csv"
+    old.write_text('#{"t_start": 1.0, "env_id": "None"}\nr,l,t,score,ground,waves,kills\n9.5,4500,1.2,100,16,1,8\n')
+    new = tmp_path / "1.monitor.csv"
+    new.write_text('#{"t_start": 1.0, "env_id": "None"}\nr,l,t,score,ground,waves,kills,start\n9.5,4500,1.2,100,16,1,8,1\n')
+    add_monitor_columns(tmp_path, {"start": 0})
+    for path, start in ((old, "0"), (new, "1")):
+        lines = path.read_text().splitlines()
+        assert lines[0].startswith("#")
+        [row] = csv.DictReader(lines[1:])
+        assert (row["kills"], row["start"]) == ("8", start)
+
+
+@needs_sb3
+def test_best_episode_only_keeps_episodes_from_the_main_start(tmp_path):
+    from agent.replay import load_episode
+    from agent.train import BestEpisode
+
+    best = BestEpisode(tmp_path, b"main start")
+    practice = _episode(50.0)
+    practice["start"] = 1
+    main = _episode(9.0)
+    main["start"] = 0
+    best.add(np.array([[1, 0, 0, 0, 0], [2, 0, 0, 0, 0]]), np.array([True, True]), [practice, main])
+    assert load_episode(tmp_path / "episode.npz")["actions"].tolist() == [[2, 0, 0, 0, 0]]
+    assert json.loads((tmp_path / "episode.json").read_text())["reward"] == 9.0
 
 
 # --- several emulators per process --------------------------------------------------------
@@ -374,18 +572,48 @@ def test_training_runs_with_two_emulators_per_process(tmp_path):
     from dataset.cheats import cheats_for
 
     train(CORE, _dbgt_rom(), SEED.read_bytes(), cheats_for("BT4E"), tmp_path, timesteps=512, envs=4,
-          per_process=2, max_steps=64, n_steps=64)
+          per_process=2, max_steps=64, n_steps=64, reward="progress")
     for i in range(4):  # 128 steps each: 2 episodes
-        assert len((tmp_path / "monitor" / f"{i}.monitor.csv").read_text().splitlines()) == 2 + 2
+        lines = (tmp_path / "monitor" / f"{i}.monitor.csv").read_text().splitlines()
+        assert len(lines) == 2 + 2
+        for row in csv.DictReader(lines[1:]):  # the episodes were paid with the progress reward
+            assert float(row["r"]) == pytest.approx(int(row["kills"]) + 10 * int(row["waves"])
+                                                    + int(row["ground"]) / 16, abs=1e-5)
     # recorded by an emulator that used a copy of the core; replays the same with the original
-    replay(CORE, _dbgt_rom(), load_episode(tmp_path / "best" / "episode.npz"))
+    episode = load_episode(tmp_path / "best" / "episode.npz")
+    assert "kills" in episode
+    replay(CORE, _dbgt_rom(), episode)
+
+
+@needs_game
+@needs_sb3
+def test_training_with_a_practice_start_logs_its_episodes_apart(tmp_path, env):
+    from agent.replay import load_episode, replay
+    from agent.train import train
+    from dataset.cheats import cheats_for
+
+    env.reset()
+    for _ in range(50):
+        env.step(env.action_space.sample())
+    later = env.emu.save_state()
+    env.close()
+
+    train(CORE, _dbgt_rom(), SEED.read_bytes(), cheats_for("BT4E"), tmp_path, timesteps=1024, envs=2,
+          max_steps=64, n_steps=64, reward="progress", practice=later, practice_share=0.5, seed=3)
+    starts = [int(row["start"]) for i in range(2) for row in
+              csv.DictReader((tmp_path / "monitor" / f"{i}.monitor.csv").read_text().splitlines()[1:])]
+    assert len(starts) == 16 and set(starts) == {0, 1}
+    header = (tmp_path / "progress.csv").read_text().splitlines()[0].split(",")
+    assert "dbgt/kills" in header and "dbgt_practice/kills" in header
+    replay(CORE, _dbgt_rom(), load_episode(tmp_path / "best" / "episode.npz"))  # a main-start episode
 
 
 # --- recording the best episode ---------------------------------------------------------
 
 
-def _episode(r, score=0, ground=0, waves=0, length=0):
-    return {"episode": {"r": r, "l": length, "t": 1.0, "score": score, "ground": ground, "waves": waves}}
+def _episode(r, score=0, ground=0, waves=0, length=0, kills=0):
+    return {"episode": {"r": r, "l": length, "t": 1.0, "score": score, "ground": ground, "waves": waves,
+                        "kills": kills}}
 
 
 @needs_sb3

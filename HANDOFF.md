@@ -1,13 +1,13 @@
 # Handoff
 
 Where the project stands and what to do next, so the work can continue in a new chat.
-Last updated 2026-10-13.
+Last updated 2026-10-14.
 
-**Next task:** the GPU task (below the reinforcement learning test section) is done: the 10M-step run
-finished on 2026-10-13 and its results are under "Second run: 10M steps on the GPU". It scores 4x
-random play but every model stops at the gun-turret wave or the one after; the next step is a run
-that rewards progress instead of points (ideas at the end of that section), or the upscaler work in
-"Open issues and next steps".
+**Next task:** the progress-reward run (2026-10-14) is done and evaluated, see "Third run: the
+progress reward" in the reinforcement learning section: with 10-minute episodes it and the points
+model both reach 6 waves and the arena at camera 2280, where time runs out again; it removed combo
+juggling but is no faster. Next: longer training episodes and/or practice starts further in, and
+evaluate with 10-minute episodes. The upscaler work is in "Open issues and next steps".
 
 ## Goal
 
@@ -29,7 +29,7 @@ how far a trained player gets compared with random input.
 | Frame collection | `dataset/` (explore, archive, novelty, inputs, recorder, cheats, routes, progress, emulator) | Works; coverage still improving (see "Open issues"). |
 | Frames from TAS movies | `dataset/tas.py` | Works for `.bk2`, `.gbmv`, `.vbm`; real `.bk2` and `.gbmv` TASes verified in sync (see below). |
 | Reinforcement learning test | `agent/` (env, train, evaluate, replay), `requirements-rl.txt` | Works; PPO on Dragon Ball GT planet 0 clearly beats random input; training keeps its best episode as a replayable recording (see below). |
-| Tests | `tests/` (pytest) | 143 pass (~2.5 min); 1 slow test opt-in, 2 need BizHawk/GBAHawk (env vars). |
+| Tests | `tests/` (pytest) | 153 pass (~3 min); 1 slow test opt-in, 2 need BizHawk/GBAHawk (env vars). |
 | Upscaler training | nothing yet | Design agreed (below). |
 
 Setup and usage are in `README.md`. The emulator core, models and ROMs are not in git
@@ -301,12 +301,121 @@ the final model and the random play; the checkpoints with the same `play`, model
   but only 1,200 px and 3 waves. The best by progress are the earlier bests with 1,440 px and 4 waves
   (3.70M-8.33M in `best\history.csv`; only the last best is kept as a recording).
 
-Ideas for the next run (in order): reward progress, not points: e.g. a bonus per wave beaten, points
-clipped or scaled down, or points only while the camera can move on; start some episodes from a save
-state at the turret wave (an explorer cell or a state saved from the model's play) so it practises
-the part it is stuck on; normalise rewards (`VecNormalize`; the value loss reached 5-9 with raw
-rewards) and shrink the learning rate and clip range linearly to 0 as rl-baselines3-zoo does; keep
-minibatches of 512 with `target_kl` 0.02 for 24 emulators. Also still open: other planets
+What really stops it (RAM logged once per second while the final model played 3 episodes of 5
+minutes, with the enemies-left counter, see the game facts):
+
+- **Time, not a barrier.** It reaches the turret wave (9 enemies) at ~185-225 s of the 300. In the
+  episode that beat it (at 250 s, 64 s after arriving) it walked on to 1,440 px and the next arena
+  at 257 s, with too little time left; so 1,440 px is where the episodes end, not a wall.
+- **Combo juggling.** Kills take long because it keeps enemies in the air for combo points: e.g.
+  40,066 -> 50,516 points (186-197 s) and 53,066 -> 62,978 (199-215 s) for one kill each. Wave 1 (8
+  enemies) took 42 s.
+- In 2 of the 3 episodes the turret wave's count reached 0 18-28 s before the end and still no
+  "GO ->" arrow came, so something more must be destroyed there (probably the turrets).
+
+### Third run: the progress reward (2026-10-14)
+
+`--reward progress` (`REWARDS` in `agent/env.py`): 1 per drop of the enemies-left count (a drop of
+1-4 while it holds at most 30, so the jumps between waves do not count; called `kills` in the code
+and logs, though the count seems to be of enemies still to come, see the game facts), 10 per wave
+beaten, new ground / 16 as before, and nothing for points except 0.2 per step that scores while the
+count is 0 and the wave goes on (`cleared_hits`). For the final 10M points model's episodes it gives
+~23 kills + 3-4 waves x 10 + 1,200-1,440 / 16 + ~6 for the hits, where a juggled kill is worth 1
+instead of ~100. `kills` is in the monitor CSVs, `progress.csv` (`dbgt/kills`), `best\` and
+`agent.evaluate`. Checked against the game: random play for 2.5 minutes drops the count 6 times,
+leaving 2 of wave 1's 8; by 4 minutes it is 8 and 1 wave.
+
+**First attempt, without the 0.2 per hit** (10:20-11:41, stopped at 2.9M steps,
+`data\rl\20261014_102053\`, log `data\rl\progress_run.log`): it learned the first three waves far
+faster than the points run (2.17 waves by 110k steps; the points run needed ~1M for 2.58) and then
+stayed flat from ~0.4M (reward ~115, ~15.5 kills, ~2.9 waves, ~1,150 px). In 624 episodes it never
+beat the turret wave (the points run did in 221 of 2,520): the count reached 0 there (up to 23 kills)
+but nothing paid for destroying the turrets, which give points and are not counted. Raw points while
+the count is 0 were tried next and rejected before training: with the old 10M model they came to
+6-15k per episode, in growing combo steps (150, 250, 400, 550, 650) on the last enemies of every
+wave, not only on the turrets; at points / 100 that is more than the wave bonuses, so juggling would
+have paid again. Hence a flat 0.2 per scoring step.
+
+**Second attempt, with it**: started 2026-10-14 11:56 from scratch, in its own minimized window,
+output in `data\rl\20261014_115648\`, log `data\rl\progress_run2.log` (`.err` beside it, process id
+in `data\rl\progress_run.pid`):
+
+```powershell
+python -u -m agent.train --device cuda --envs 24 --per-process 2 --batch-size 512 --target-kl 0.02 --minutes 5 --timesteps 10000000 --reward progress
+```
+
+Up to 5.4M steps it looked like the first attempt: reward ~120 from ~1M on, ~16 kills, ~2.9 waves.
+One episode beat the turret wave, at ~2.48M steps (23 kills, 4 waves, 1,351 px, reward 154; the best
+episode), then none in the next 504. In the 0.5M steps before 3.2M the most common kill count was 14
+(8 + 4 + 2: it reached the turret wave and its count never dropped), so the turret wave's count rarely
+reached 0 and the 0.2 per hit there rarely applied: the model arrives too late in the 5 minutes.
+
+**Practice start** (`agent/starts.py`, `--practice`, `--practice-share`): a quarter of the episodes
+now start at the turret wave. `data\starts\dbgt\turrets.state` was saved with
+`python -m agent.starts data\rl\20261014_115648\best\episode.npz --camera 1320 --out data\starts\dbgt\turrets.state`:
+the 4-wave best episode replayed to the step where the turret wave's count is set (9 enemies, camera
+1320, 3:30 into the episode, 22,630 points). Practice episodes run the same 5 minutes from there; they
+are logged as `dbgt_practice/*` in `progress.csv` and with `start` = 1 in the monitor CSVs (resuming
+added the column, 0 for earlier episodes), and `best\` only takes episodes from the main start.
+`rollout/ep_rew_mean` mixes both kinds; use `dbgt/*` for the main start.
+
+The run was stopped at the 5,399,136-step checkpoint and resumed at 14:08 with
+`python -u -m agent.train --resume data\rl\20261014_115648 --practice data\starts\dbgt\turrets.state --practice-share 0.25`
+(log `data\rl\progress_run3.log`, ~700 steps/s); it ended at 15:57 with 10M steps.
+
+- Practice episodes beat the turret wave from the first ones after the resume (so the 5.4M model
+  could already do it when it had the time): every one of the first ~190 beat 3 waves and gained
+  exactly 960 px. From the turret start (6.0M checkpoint): the 9 counted soldiers dead at 1:26,
+  turrets destroyed and the arrow at 1:55, a mini-boss wave with a health bar and no enemy count
+  (count 0 throughout, so only the 0.2 per hit and the wave bonus pay) at camera 1560 until 3:29, a
+  short robot wave, then the arena at camera 2280 (green gunners and a robot, count 3) at 4:03, where
+  the 5 minutes ran out. After ~7.8M some practice episodes failed the turret wave again.
+- Main-start episodes: 5 of 663 after the resume beat 4 waves (1 in ~1,200 before); the best (reward
+  163.6 at 7.13M steps: 23 kills, 4 waves, 1,440 px) got through the early waves much faster than the
+  points models (robot mid-boss at ~0:50, turret arena at ~2:10) but is an outlier.
+
+Evaluation, 5 episodes from the planet 0 start (the checkpoints and both 10-minute rows with the
+model-only script, `data\rl\evals\*.log`; the random play with `agent.evaluate`, which now reports
+kills; `eval_*` folders in both run folders):
+
+| Play style | Game minutes | Points | New ground (px) | Waves | Kills |
+|---|---|---|---|---|---|
+| Progress, 10M (final) | 5 | 33,258 | 1,200 | 3.0 | 15.4 |
+| Progress, 8.4M checkpoint | 5 | 42,026 | 1,200 | 3.0 | 20.0 |
+| Progress, 7.1M checkpoint | 5 | 36,792 | 1,200 | 3.0 | 18.6 |
+| Points, 10M (second run) | 5 | 74,250 | 1,248 | 3.2 | |
+| Explorer's random bursts | 5 | 18,340 | 388 | 1.0 | 9.0 |
+| Uniform random, 4-frame steps | 5 | 16,148 | 415 | 1.6 | 10.4 |
+| Progress, 10M (final) | 10 | 65,076 | 2,160 | 6.0 | 23.2 |
+| Progress, 7.1M checkpoint | 10 | 62,710 | 2,160 | 6.0 | 23.2 |
+| Points, 10M (second run) | 10 | 106,551 | 2,127 | 6.0 | 23.0 |
+
+- **The progress reward did not get further.** In 10 minutes every episode of both models beats 6
+  waves and reaches the arena at camera 2280 (2,160 px; one points episode 1,996), where time runs
+  out again: in the final progress model's first 10-minute episode the turret arena comes at ~3:30,
+  the turret wave ends at ~6:50, the mini-boss wave ~7:20-8:20, and the 2280 arena at ~9:20. In 5
+  minutes the progress models are a little behind (every episode stops at the turret wave, 3.0 waves
+  against 3.2).
+- It removed the combo juggling (about 60% of the points for the same progress) but did not make the
+  model faster: the turret wave alone takes ~3 minutes of a main-start episode in evaluation.
+- **The 5-minute evaluation hid how far the models get**: the points model of the second run, judged
+  stuck at the turret wave, also reaches 6 waves in 10 minutes. Evaluate with 10-minute episodes from
+  now on.
+
+Next steps worth trying: train with longer episodes (10 minutes or more) so the later waves get
+practice from the main start; practice starts further in (the 2280 arena; a list of several
+states); a small cost per step or a bonus for beating a wave quickly, so that speed pays; and
+evaluating several checkpoints, since late training wobbles (here the 8.4M checkpoint beat the final
+model at 5 minutes).
+
+Known quirk: after a state load the emulator's screen is not redrawn until the next frame runs, so
+the first observation of an episode (and `render()` right after `reset()`) shows the last frame
+before the load, e.g. the previous episode's end. Running a frame in `reset` would fix it but shift
+every recording by a frame and break the replay of older ones; it costs one stale observation per
+episode of 4,500 steps.
+
+Other ideas not tried yet: longer episodes; normalise rewards (`VecNormalize`; the value loss reached 5-9 with raw rewards) and shrink the
+learning rate and clip range linearly to 0 as rl-baselines3-zoo does. Also still open: other planets
 (`--root levelNN`); recording the model's play (frames plus buttons) as training data for the
 behaviour cloning model.
 
@@ -530,8 +639,15 @@ that.
   hit, a few hundred per enemy, 800 for breaking the machine that blocks planet 0.
 - Fighter slots: `0x03001AF0` + i * `0x2C`, i = 0-8 (the id is at `+4`); the health cheats write `+6`
   (health) and `+8` (max health). Enemies are not among them: they still die with the cheats on.
-- Enemies left in the current wave: `0x030019B0` (e.g. 7 -> 0 for planet 0's first wave). While the
-  green "GO ->" arrow shows it holds an unrelated value (120, 192, 224).
+- Enemies left in the current wave: `0x030019B0`, counts down by one as the wave's enemies are
+  beaten, but it reaches 0 while the last enemies are still on screen (frames show 2 soldiers
+  standing 2 and 6 s after it hit 0), so it most likely counts enemies still to come; the arrow
+  comes 7-12 s after it hits 0, once those are beaten too. From the route seed planet 0's counts start
+  at 8, 4, 2, then 9 at the gun-turret wave (camera 1320). Between waves (while the green "GO ->"
+  arrow shows and while walking to the next arena) it holds unrelated values (40, 120, 128, 192, 224)
+  or 0, then jumps to the next wave's count. At the turret wave the arrow did not always come even
+  ~20 s after the count hit 0 (2 of 3 episodes), so something more there, probably the turrets, must
+  be destroyed too.
 - "GO ->" arrow shown (wave beaten, walk right): `0x03001CEA` = 1.
 - Camera x: `0x030024D8` (16-bit) = BG3 horizontal scroll + 320, mod 512. Grows through a stage (planet
   0: 138 -> 1560 over the first five waves), stops at each wave's arena, rarely drops a few pixels.
