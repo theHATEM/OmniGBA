@@ -3,8 +3,11 @@
 Where the project stands and what to do next, so the work can continue in a new chat.
 Last updated 2026-10-13.
 
-**Next task:** see "Next task: GPU training and recording the best episode" (after the
-reinforcement learning test section).
+**Next task:** the GPU task (below the reinforcement learning test section) is done: the 10M-step run
+finished on 2026-10-13 and its results are under "Second run: 10M steps on the GPU". It scores 4x
+random play but every model stops at the gun-turret wave or the one after; the next step is a run
+that rewards progress instead of points (ideas at the end of that section), or the upscaler work in
+"Open issues and next steps".
 
 ## Goal
 
@@ -25,8 +28,8 @@ how far a trained player gets compared with random input.
 | Upscaler | `upscale_model.py` (ncnn, Vulkan), `upscale_process.py` (separate process, shared memory) | Works. See numbers below. |
 | Frame collection | `dataset/` (explore, archive, novelty, inputs, recorder, cheats, routes, progress, emulator) | Works; coverage still improving (see "Open issues"). |
 | Frames from TAS movies | `dataset/tas.py` | Works for `.bk2`, `.gbmv`, `.vbm`; real `.bk2` and `.gbmv` TASes verified in sync (see below). |
-| Reinforcement learning test | `agent/` (env, train, evaluate), `requirements-rl.txt` | Works; PPO on Dragon Ball GT planet 0 clearly beats random input (see below). |
-| Tests | `tests/` (pytest) | 129 pass (~1 min); 1 slow test opt-in, 2 need BizHawk/GBAHawk (env vars). |
+| Reinforcement learning test | `agent/` (env, train, evaluate, replay), `requirements-rl.txt` | Works; PPO on Dragon Ball GT planet 0 clearly beats random input; training keeps its best episode as a replayable recording (see below). |
+| Tests | `tests/` (pytest) | 143 pass (~2.5 min); 1 slow test opt-in, 2 need BizHawk/GBAHawk (env vars). |
 | Upscaler training | nothing yet | Design agreed (below). |
 
 Setup and usage are in `README.md`. The emulator core, models and ROMs are not in git
@@ -247,155 +250,252 @@ Means over 5 episodes from the planet 0 start:
   walking right; by 1M it walks on.
 - Evaluating 3 play styles x 5 episodes x 5 game minutes takes about 8 minutes.
 
-Ideas not tried yet: longer training episodes, or starting episodes from explorer cells further into
-the stage (2-minute episodes spend most of their time on wave 1); more steps on the GTX 1660 Ti
-(`--device cuda`); other planets (`--root levelNN`); recording the model's play (frames plus
-buttons) as extra training data for the behaviour cloning model.
+### Second run: 10M steps on the GPU (2026-10-13)
+
+GTX 1660 Ti PC, 5-minute episodes, 10,000,644 steps in `data\rl\20261013_112630\` (11:26-16:23,
+about 5 hours of wall time including ~1.5M steps of a dropped branch; see part 3 of the GPU task for
+the resumes, the speed fixes and why the run went back from 5.4M to 3.9M). Speed ~535 steps/s at the
+start (12 emulators), ~710-730 at the end (24 emulators, 2 per process, distribution checks off).
+
+Learning curve (training episodes of 5 game minutes; means of the log rows around each point):
+
+| Steps | 1M | 2M | 3M | 4M | 5M | 6M | 7M | 8M | 9M | 10M |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ep_rew_mean` | 359 | 435 | 517 | 598 | 528 | 559 | 591 | 629 | 687 | 734 |
+| points | 30,845 | 36,429 | 44,240 | 50,314 | 43,950 | 48,997 | 55,389 | 54,249 | 59,325 | 70,240 |
+| new ground (px) | 990 | 1,121 | 1,152 | 1,188 | 1,098 | 1,189 | 1,130 | 1,171 | 1,177 | 1,274 |
+| waves | 2.58 | 2.83 | 2.88 | 3.01 | 2.76 | 3.00 | 2.90 | 3.03 | 3.00 | 3.40 |
+
+(5M is the branch after going back to 3.9M; the dropped branch had fallen to ~470.)
+
+Evaluation, means over 5 episodes of 5 game minutes from the planet 0 start (`agent.evaluate` for
+the final model and the random play; the checkpoints with the same `play`, model only):
+
+| Play style | Points | New ground (px) | Waves beaten | Scenes | New graphics |
+|---|---|---|---|---|---|
+| PPO 10M (final `model.zip`) | 74,250 | 1,248 | 3.2 | 41.0 | 5,581 |
+| PPO 7.1M (`ppo_7099140_steps.zip`) | 59,080 | 1,267 | 3.4 | 39.8 | 5,289 |
+| PPO 3.9M (`ppo_3899652_steps.zip`) | 58,404 | 1,279 | 3.6 | 36.4 | 5,621 |
+| PPO 1M (first run, laptop) | 31,190 | 1,012 | 2.6 | 46.0 | |
+| Explorer's random bursts | 18,340 | 388 | 1.0 | 21.6 | 3,807 |
+| Uniform random, 4-frame steps | 16,148 | 415 | 1.6 | 25.2 | 3,821 |
+
+- The random play gave exactly the first run's numbers (same seeds, same start state), so the
+  comparison is like for like.
+- The final model scores 2.4x the first run's 1M model and 4x random play, with 23% more new ground
+  and 3.2 instead of 2.6 waves. Results are in `eval.json` and `eval_ppo.png` (final),
+  `eval_3.9M\` and `eval_7.1M\` in the run folder.
+- **All PPO models stop at the gun-turret wave or the one after it.** In every evaluation episode of
+  all three models the new ground is 1,200 px (3 waves: stuck at the turret wave) or 1,440 px (4
+  waves: turrets beaten, stuck at the next wave). None of the 2,520 training episodes (all monitor
+  CSVs, dropped branch included) got past 1,440 px: 221 beat 4 waves, none beat 5. The final model's
+  contact sheet: wave 1, the robot mid-boss at ~1:40 (a 21-hit combo), the dark corridor, a second
+  blocking object, then the turret area from ~3:00 to the end, fighting the soldiers that keep
+  coming there.
+- **More points, not more progress.** From 3.9M to 10M the points rose 27% while ground and waves did
+  not (the 3.9M checkpoint even beat slightly more waves). The model learned combos: points per kill
+  grow with the combo, from ~550-600 to ~2,800-2,950 (the best episode scores 20,400 in its first 9
+  seconds, holding B with R or diagonals). Points are ~85-90% of the reward, so the reward now
+  mostly pays for combo farming.
+- The best episode of the run (`best\`, reward 1,282 at 8.76M steps) is a farming one: 120,666 points
+  but only 1,200 px and 3 waves. The best by progress are the earlier bests with 1,440 px and 4 waves
+  (3.70M-8.33M in `best\history.csv`; only the last best is kept as a recording).
+
+Ideas for the next run (in order): reward progress, not points: e.g. a bonus per wave beaten, points
+clipped or scaled down, or points only while the camera can move on; start some episodes from a save
+state at the turret wave (an explorer cell or a state saved from the model's play) so it practises
+the part it is stuck on; normalise rewards (`VecNormalize`; the value loss reached 5-9 with raw
+rewards) and shrink the learning rate and clip range linearly to 0 as rl-baselines3-zoo does; keep
+minibatches of 512 with `target_kl` 0.02 for 24 emulators. Also still open: other planets
+(`--root levelNN`); recording the model's play (frames plus buttons) as training data for the
+behaviour cloning model.
 
 ## Next task: GPU training and recording the best episode
 
-Handoff written 2026-10-13 for the next session, on the desktop PC with the GTX 1660 Ti. Three parts,
-in this order: set up CUDA PyTorch and measure the speed; add a recording of the best episode the
-model plays during a training run (test-first); then start a long training run that uses it.
+Planned 2026-10-13 in three parts: set up CUDA PyTorch and measure the speed; record the best episode
+the model plays during a training run (test-first); then a long training run that uses it. Parts 1
+and 2 were done on 2026-10-13; part 3 is running.
 
-### Part 1: set up the desktop
+### Part 1 (done): the GPU PC and its speed
 
-1. Get the repo at commit `a662f61` or later (it has `agent/`). The core, the ROM and `data\` are not
-   in git: `core\mgba_libretro.dll` and `roms\rom_d\Dragon Ball GT - Transformation.gba` must be in
-   place (the game already ran on this PC; see "Environments"). The planet 0 start state
-   `data\seeds\dbgt\level00.state` is made by the first `agent.train` run if missing (a one-time wait
-   while it plays the route from power-on).
-2. Install PyTorch with CUDA **before** `requirements-rl.txt`; otherwise pip takes the CPU-only build
-   from PyPI:
+The PC with the GTX 1660 Ti is an Intel Core i7-9750H laptop (6 cores, 12 threads, 16 GB RAM); see
+"Environments" for its setup. PyTorch `2.14.1+cu126` sees the GPU (driver 610.88).
 
-   ```powershell
-   pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu126
-   pip install -r requirements-rl.txt
-   ```
-
-   The `torch==2.14.1` line in `requirements-rl.txt` is satisfied by `2.14.1+cu126`, so pip keeps the
-   CUDA build. If a CPU build got in first, `pip uninstall torch` and repeat. The cu126 build needs an
-   NVIDIA driver for CUDA 12.6 or newer (`nvidia-smi` shows "CUDA Version"); update the driver if it
-   is older. The GTX 1660 Ti (Turing, compute capability 7.5) is supported by this build.
-3. Check:
-
-   ```powershell
-   python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-   python -m pytest tests/test_agent.py
-   ```
-
-   Expect `2.14.1+cu126 True NVIDIA GeForce GTX 1660 Ti`, and all 17 agent tests passing.
-4. Measure the speed. The emulators run on the CPU (one process each; one alone does ~290 steps/s on
-   the laptop), the network on the GPU. Try `--envs` values around the number of physical CPU cores
-   (`(Get-CimInstance Win32_Processor).NumberOfCores`):
-
-   ```powershell
-   python -u -m agent.train --device cuda --envs 8 --timesteps 100000 --out data\rl\speed
-   ```
-
-   `time/fps` in the log is steps per second for all emulators together; `nvidia-smi` should list the
-   python process. The laptop did 172 steps/s on its CPU with 8 emulators, CPU at 100%. Pick the
-   `--envs` with the highest fps and keep it for the main run (it also sets the batch per update:
-   128 steps x emulators).
-
-### Part 2: record the best episode of a training run
-
-Goal: during and after a training run, `data\rl\<run>\best\` holds the single best episode any
-emulator played in the whole run, as a file that replays exactly, plus a video and a contact sheet
-made from it.
-
-Design:
-
-- **Record actions, not frames.** The emulator is deterministic and every episode starts from the
-  same state, so the start state plus each step's action reproduces the whole game (see
-  `test_same_actions_play_the_same_game`). An episode is 1,800-4,500 actions of 5 bytes; sending
-  frames back from 8 emulator processes would cost far more.
-- **Where:** a Stable-Baselines3 callback in `agent/train.py` next to `EpisodeStats`, e.g.
-  `BestEpisode(out_dir / "best", state, frames_per_step)`. In `_on_step`:
-  - `self.locals["actions"]` (shape `(n_envs, 5)`) holds the actions just taken;
-  - `self.locals["dones"]` says which emulators just finished an episode;
-  - `self.locals["infos"][i]["episode"]` holds that episode's Monitor stats (`r` reward, `l` length,
-    `score`, `ground`, `waves`).
-
-  Keep one action list per emulator and append every step's actions. When an emulator's episode
-  ends, compare its reward with the best so far, save it if higher, then clear that list. The step
-  that ends an episode belongs to the old episode; the next step is the first of the new one (SB3
-  resets automatically). Put the bookkeeping in a plain method (e.g. `add(actions, dones, infos)`)
-  so it can be tested without PPO.
-- **Best = highest episode reward** (`r`, the training objective: score / 100 + new ground / 16).
-  A tie keeps the earlier episode.
-- **Files:**
-  - `best\episode.npz` (`np.savez_compressed`): `actions` (uint8, steps x 5), `state` (the start
-    state, a ~16 KB compressed save state, so the file stands alone) and `frames_per_step`.
-  - `best\episode.json`: reward, score, ground, waves, steps, training timesteps so far
-    (`self.num_timesteps`), emulator index, root, ROM file name and cheats.
-  - Write both to a temporary name and then rename, so Ctrl+C never leaves half a file.
-  - Append a line per new best to `best\history.csv` (timesteps, reward, score, ground, waves), and
-    print one line, to show how the best improves over the run.
-- **Replay:** a new `agent/replay.py`, `python -m agent.replay data\rl\<run>\best\episode.npz`. It
-  works as follows:
-  - Make a fresh `DbgtEnv` with the same cheats, the saved state and `max_steps` = number of actions,
-    and play the actions.
-  - Check that score, ground and waves equal the recorded values. If they differ, stop with an
-    error: the recording is not reproducible.
-  - Write `episode.mp4`: every frame at 60 fps, scaled 3x with nearest neighbour to 720x480
-    (`cv2.VideoWriter`, `mp4v`).
-  - Write `episode.png`: a contact sheet with one frame every 10 s (`evaluate.contact_sheet`).
-  - For the video it needs every frame while keeping 4-frame steps (the reward and wave count sample
-    RAM once per step). So give `DbgtEnv` a way to hand out each frame of a step, such as an
-    optional callback called after every frame.
-  - Write frames to the video as they come instead of keeping them: 5 minutes is 18,000 frames
-    (~2 GB in memory).
-  - `agent.train`'s `main` runs the replay at the end of training, also after Ctrl+C.
-- Optional, for the behaviour cloning goal: a `--frames` flag on the replay that writes every frame
-  as PNG plus `buttons.csv` (frame number, button mask), a ready demonstration of good play.
-
-Tests first, in `tests/test_agent.py` (it already has the `env` fixture, `needs_game`, `needs_sb3`
-and the toy `Counter` env):
-
-1. Bookkeeping with made-up `actions`, `dones` and `infos` for 2 emulators: lists kept apart, only a
-   better episode replaces the saved one, the step that ends an episode is included.
-2. A saved episode replays: play ~300 random steps in `env`, save them, replay them in a **new**
-   `DbgtEnv` (fresh emulator), and get the same score, ground, waves and last frame. Training reuses
-   one emulator per process across episodes, so this checks that loading the state resets
-   everything the game uses.
-3. The replay writes a video with the right number of frames (`cv2.VideoCapture`,
-   `CAP_PROP_FRAME_COUNT`) and a contact sheet.
-4. Extend `test_training_runs_on_two_emulators_then_the_model_plays`: `best\episode.json` exists and
-   its reward equals the highest `r` in the monitor CSVs.
-
-Then check it for real: a 100k-step run, `agent.replay` on its best episode, and look at the video and
-the contact sheet. Add the replay command and the `best\` files to the README's reinforcement learning
-section.
-
-### Part 3: the long run
+Install PyTorch with CUDA **before** `requirements-rl.txt`; otherwise pip takes the CPU-only build:
 
 ```powershell
-python -u -m agent.train --device cuda --envs <N> --minutes 5 --timesteps 10000000
+pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu126
+pip install -r requirements-rl.txt
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
+
+Speed, `python -u -m agent.train --device cuda --envs N`, steps per second for all emulators together
+(`time/fps`) after ~25k steps:
+
+| `--envs` | 6 | 8 | 10 | 12 | 16 |
+|---|---|---|---|---|---|
+| steps/s | 363 | 440 | 523 | 575 | 585 |
+
+- The emulators (CPU) limit the speed: it grows up to the 12 hardware threads and stops there. The GPU
+  was about 33% busy with 8 emulators. Over a 100k-step run with 8 emulators the speed only dropped
+  from 440 to 420.
+- Each emulator process takes ~0.5 GB of RAM (it imports PyTorch); 16 emulators used 9.7 GB, leaving
+  2.4 GB free. **12 is the setting for this PC**: as fast as 16, less memory. The laptop CPU did 172
+  with 8.
+- More emulators also means more data per update (128 steps x emulators: 1,536 at 12 instead of
+  1,024 at 8), with the same 4 epochs and minibatches of 256.
+- On 100k steps with 8 emulators, `ep_rew_mean` rose 113 -> 134 and the best episode reached the robot
+  mid-boss (below).
+
+### Part 2 (done): the best episode of a training run
+
+`data\rl\<run>\best\` holds the best episode any emulator played in the run (highest episode reward,
+the training objective; a tie keeps the earlier one), written whenever a better one ends:
+
+- `episode.npz`: the actions (uint8, steps x 5), the start state (compressed save state), the frames
+  per step, and the stats as a JSON string, so the file stands alone. Written to a temporary name and
+  then renamed, so Ctrl+C never leaves half a file. `episode.json` has the same stats for reading:
+  reward, score, ground, waves, steps, training timesteps when it was played, emulator, ROM, cheats,
+  root.
+- `history.csv`: one line per new best (timesteps, reward, score, ground, waves); each also prints a
+  line in the training log.
+- `episode.mp4` and `episode.png`: written by `agent.train` at the end (also after Ctrl+C) by
+  replaying the recording: every frame at 60 fps scaled 3x to 720x480 (`mp4v`, ~90 MB per 2 game
+  minutes), and a contact sheet with one frame every 10 game seconds.
+- `python -m agent.replay data\rl\<run>\best\episode.npz` does the same by hand. It replays the actions
+  in a fresh `DbgtEnv` and stops with an error if score, ground or waves differ from the recording.
+
+Code: `BestEpisode` (a Stable-Baselines3 callback in `agent/train.py`; `add(actions, dones, infos)`
+does the bookkeeping, one action list per emulator, the step that ends an episode belongs to it),
+`agent/replay.py` (`save_episode`, `load_episode`, `replay`, `record`) and an `on_frame` callback on
+`DbgtEnv` that gets every game frame of a step (for the video; the reward still samples RAM once per
+step). Tests in `tests/test_agent.py`: bookkeeping with made-up steps for 2 emulators; a recording
+replays the same score, ground, waves and last frame in a new emulator after the first one played
+other episodes; a changed recording is refused; the video has every frame; and the training test
+checks `best\episode.json` against the monitor CSVs and replays it.
+
+Checked for real on the 100k-step run with 8 emulators (`data\rl\speed_envs8\20261013_110816\`): the
+best episode (reward 194.1 at 86,400 steps: 16,406 points, 480 px new ground, 1 wave) replayed with the
+same numbers; its contact sheet shows wave 1 beaten, the blocking machine broken and the robot
+mid-boss reached within the 2 minutes. The 8 emulators' episodes all have the same length, so they end
+together and new bests come in groups every 14,400 steps (8 x 1,800).
+
+Found on the way:
+
+- **Python 3.12.0 cannot load Stable-Baselines3 models.** Its `zipfile` fast-seek for uncompressed
+  members runs before the read-buffer check and leaves the end-of-file flag set, so after a short
+  forward seek near the end of a member reads return nothing. SB3 saves models uncompressed, and
+  `PPO.load` fails with `PytorchStreamReader failed reading file .data/serialization_id: file read
+  failed`. Fixed in later 3.12 releases (3.14's code checks the buffer first). The venv here was moved
+  to 3.12.13 with `python -m venv --upgrade .venv`, keeping the installed packages.
+- **One mGBA core per process.** A second `HeadlessGBA` in the same process shares the core's state
+  (it is one DLL), and closing both crashes with an access violation. Training already uses one
+  process per emulator; the tests close their emulator before replaying, and `agent.train` replays
+  after the emulator processes are closed.
+- Not done: the optional `--frames` flag (every frame as PNG plus `buttons.csv`) for the behaviour
+  cloning goal.
+
+### Part 3 (done): the long run
+
+Started 2026-10-13 11:26 in its own minimized console window, output in `data\rl\20261013_112630\`:
+
+```powershell
+python -u -m agent.train --device cuda --envs 12 --minutes 5 --timesteps 10000000
+```
+
+It was stopped and resumed three times, always in its own minimized window (Ctrl+C there stops it
+and still saves `model.zip` and replays the best episode): twice for the speed fixes below, right
+after a checkpoint (so only a few thousand steps were lost), and once back to an earlier checkpoint
+because the training had got worse:
+
+| From | Command | Speed (steps/s) | Log |
+|---|---|---|---|
+| 11:26, step 0 | `--device cuda --envs 12 --minutes 5 --timesteps 10000000` | 576 cold, ~535 warm | `data\rl\long_run.log` |
+| 12:05, step 1,199,952 | `--resume data\rl\20261013_112630` (distribution checks off) | ~585-604 | `data\rl\long_run2.log` |
+| 12:44, step 2,299,908 | `--resume data\rl\20261013_112630 --envs 24 --per-process 2` | ~710 | `data\rl\long_run3.log` |
+| 14:01, back to step 3,899,652 | `--resume data\rl\20261013_112630\checkpoints\ppo_3899652_steps.zip --batch-size 512 --target-kl 0.02` | ~726 | `data\rl\long_run4.log` |
+
+Why the third resume went back: after the peak at ~3.9M steps (`ep_rew_mean` 614, 54k points, 1,260
+px, 3.3 waves) the training got worse and stayed worse up to 5.4M (`ep_rew_mean` 462-488, ~40k
+points, ~1,000 px, ~2.5 waves). Each update had started changing the policy too much: `clip_fraction`
+(healthy around 0.1-0.2) rose 0.19 (first 0.5M) -> 0.32 (by 2.3M) -> 0.44 after the switch to 24
+emulators -> 0.53, and `approx_kl` 0.004 -> 0.008 -> 0.015 -> 0.03. The switch made it worse:
+with minibatches of 256, twice the samples per update meant twice the gradient steps (48 instead of
+24). Minibatches of 512 bring it back to 24, and `target_kl` 0.02 stops an update once the KL passes
+0.03 (SB3 uses 1.5 x target_kl). In the first 200k steps after it: `approx_kl` ~0.016, `clip_fraction`
+~0.33, and some updates stop early. The dropped branch's checkpoints are in `checkpoints\dropped\` and
+its log rows in `progress_dropped.csv`; the monitor CSVs still hold its episodes, and `best\` keeps
+the episode from 3.92M (reward 1,027: 93,748 points, 1,440 px, 4 waves), played after the checkpoint
+by the dropped branch. The learning rate (2.5e-4) and clip range (0.1) are constant here;
+rl-baselines3-zoo's Atari settings shrink both linearly to 0, which would also calm the late updates
+(not tried).
+
+Errors and the core's `%s: %s` lines are in the matching `.err` files; the process id is in
+`data\rl\long_run.pid`. `run.json` lists the resumes under `resumed`. `progress.csv` and the monitor
+CSVs simply continue (`time/time_elapsed` starts again from 0 at each resume; monitor files 12-23
+start at the second resume). From the second resume on, each PPO update uses 3,072 samples
+(128 steps x 24 emulators) instead of 1,536.
 
 - `--minutes 5`: 2-minute episodes spent most of their time on wave 1, yet the 1M model went further
   in 5-minute evaluations. Longer episodes let it practise the later parts of planet 0 (mid-boss,
   turrets).
-- 10M steps is the usual Atari budget. Work out the hours from the measured fps first (at the
-  laptop's 172 steps/s it would be 16 hours). Checkpoints come every 100k steps. Ctrl+C stops the run
-  and still saves `model.zip`, and `best\` is kept.
-- Keep Windows from sleeping during the run, and do not run `play_gba.py` (it also uses the GPU) at
-  the same time.
-- From a Claude session, start it as a background command with its output going to a log file, as
-  the first run did. Follow `ep_rew_mean` and `dbgt/*` in the log or `progress.csv`, and
-  `best\history.csv`.
+- 10M steps is the usual Atari budget. It ended at 16:23 with 10,000,644 steps; the replay at the end
+  reproduced the best episode and wrote `best\episode.mp4` (~210 MB for 5 game minutes) and
+  `best\episode.png`. Results: "Second run: 10M steps on the GPU" in the reinforcement learning
+  section. Windows sleep and hibernate are off on mains power on this PC; during a run do not close
+  the lid, and do not run `play_gba.py` (it also uses the GPU) at the same time.
 
-After the run:
+Where the training time goes (12 emulators, measured with PPO and the emulators separately on
+2026-10-13, both while the run was going, so absolute numbers are a little high). Stable-Baselines3
+is synchronous: the emulators wait while the main process runs the network and the PPO update.
 
-```powershell
-python -m agent.evaluate --model data\rl\<run>\model.zip --minutes 5 --episodes 5
-```
+| Part, per timestep (~1.87 ms at 535 steps/s) | Time |
+|---|---|
+| main process: network on the GPU and bookkeeping (9.5 ms per step of all 12 emulators) | 0.79 ms |
+| emulators in parallel (4 frames 4.4 ms + frame to observation 1.0 ms, waiting for the slowest) | ~0.55 ms |
+| PPO update (emulators idle) | 0.50 ms |
 
-Compare with the first run's table above (PPO 1M over 5 minutes: 31,190 points, 1,012 ground,
-2.6 waves, 46 scenes) and watch `best\episode.mp4`. Then add the results to the "Reinforcement
-learning test" section: speed, learning curve, evaluation table and what the best episode reached.
-`agent.evaluate` loads models on the CPU, so a GPU-trained model can be evaluated on any machine.
+- **Done:** `torch.distributions` checked the arguments of every action distribution (5 categorical
+  distributions per step for the `MultiDiscrete` action, each check waiting for the GPU), about a
+  third of the main process's time per step. `train` now turns that off
+  (`Distribution.set_default_validate_args(False)`); main process 9.5 -> 6.3 ms per step, update
+  0.50 -> 0.40 ms per timestep, the run 535 -> 604 steps/s. It changes no numbers.
+- **Done:** several emulators per worker process (`--per-process`, `agent/vec_env.py`). The main
+  process's cost per step barely depends on the number of emulators, so more emulators per step make
+  it cheaper per emulator, but more processes than hardware threads did not help (16 processes: same
+  speed as 12, and 9.7 GB RAM, ~0.5 GB per process for PyTorch). `SubprocGroupVecEnv` runs several
+  emulators in each process, one after another; it behaves like SB3's `SubprocVecEnv` (tested
+  against `DummyVecEnv`). Each emulator in a process loads its own copy of the core DLL
+  (`core_copies`, in `core\copies\`): a test shows two emulators in one process with their own copies
+  play exactly as they do alone, and a best episode recorded with a copy replays with the original.
+  Measured back to back (warm laptop, 45k steps each): 12 x 1 ~655, 24 x 2 ~766 (+17%), 36 x 3
+  ~790-810 (+20%) steps/s. 24 x 2 was chosen: most of the gain while doubling, not tripling, the
+  samples per update.
+- Not done, in order of payoff: (1) sample the 5 action parts in one go instead of 5 separate
+  `Categorical` distributions (their sampling and normalising are ~36% of what is left of the main
+  process's time per step; a custom SB3 action distribution, which must give the same log
+  probabilities and entropy), ~+10%; (2) turn the emulator's 16-bit frame straight into the grey
+  observation with a lookup table (identical result; `FastArrayVideoDriver.screenshot` plus the copy
+  cost ~0.95 of the 1.0 ms), ~+3-5%. Overlapping emulation with the network in two groups of
+  emulators would help less than it seems: the network's time per call hardly shrinks with fewer
+  emulators, so two groups mean twice the calls. (Minibatches of 512, also on the list, came in with
+  the third resume for stability; they made the update cheaper too: ~710 -> ~726 steps/s.)
+- Measured and not worth it: more than 12 emulators (16: same speed, 9.7 GB RAM); a higher process
+  priority for the main process (no change); `mgba_idle_optimization = Detect and Remove` (no gain,
+  same game). The core option `mgba_frameskip = fixed_interval` (interval 3) saves 15% of emulation
+  and plays the same game, but it skips rendering the wrong frames for 4-frame steps, and libretro.py
+  0.12 crashes on skipped frames: its `video_refresh` matches a NULL frame as `0`, but ctypes gives
+  `None`.
+- Follow `ep_rew_mean` and `dbgt/*` in the log or `progress.csv`, and `best\history.csv`. With 12
+  emulators x 4,500 steps, episodes end together every 54,000 steps.
+
+Evaluated after the run with
+`python -m agent.evaluate --model data\rl\20261013_112630\model.zip --minutes 5 --episodes 5`
+(~15 minutes with two checkpoint evaluations running alongside). `agent.evaluate` loads models on
+the CPU, so a GPU-trained model can be evaluated on any machine. It always plays the two random
+styles too; the checkpoints were evaluated with a small script around `evaluate.play` and
+`PPOPolicy` (model only). A `--model-only` flag or a way to evaluate several checkpoints would save
+that.
 
 ## Open issues and next steps (in suggested order)
 
@@ -470,6 +570,13 @@ learning test" section: speed, learning curve, evaluation table and what the bes
 
 - The game has been run with `D:\development\python\GBA\.venv` (Python 3.12; has ncnn, libretro.py,
   pygame). `README.md` describes creating a fresh `.venv` from `requirements.txt` (verified to work).
+- GPU PC (Intel Core i7-9750H laptop, 6 cores / 12 threads, 16 GB RAM, GTX 1660 Ti 6 GB, driver
+  610.88), project in `D:\development\python\gba_capture`: `.venv` made on 2026-10-13 from
+  `requirements-dev.txt`, then CUDA PyTorch (`cu126`) and `requirements-rl.txt`; all tests pass. It
+  was made with Python 3.12.0 and moved to 3.12.13 (installed with `uv python install 3.12`) because of
+  3.12.0's zipfile bug (see part 2 of the GPU task). The core, both ROMs (`roms\rom_d\`,
+  `roms\rom_naruto\`) and the models are in place, and `data\seeds\` has both games' route seeds.
+  BizHawk, GBAHawk and the BIOS are not (only their `DOWNLOAD.txt`), so the TAS tests skip here. PyTorch downloaded at only ~0.5 MB/s here (ProtonVPN was running).
 - Second machine (laptop, Intel Core 5 120U, Intel graphics only, so no CUDA for training): `.venv` made
   with Python 3.13.14 from `requirements-dev.txt`, plus CPU PyTorch and `requirements-rl.txt`; all
   tests pass. The ROMs there are in `Downloads\ROMS_FOLDER` and were copied to `roms\rom_d\`.

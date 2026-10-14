@@ -9,7 +9,10 @@ A Game Boy Advance player that upscales the picture with a neural network in rea
 ## Requirements
 
 - Windows 10 or 11, 64-bit. Paths in the code use Windows separators and the emulator core is a `.dll`.
-- Python 3.12 or newer (libretro.py and numpy 2.5 need it). Tested with Python 3.12.0.
+- Python 3.12 or newer (libretro.py and numpy 2.5 need it). Tested with Python 3.12.0 and 3.12.13.
+  The reinforcement learning part (`agent/`) needs 3.12.1 or newer: 3.12.0's `zipfile` misreads
+  uncompressed zip files after some seeks, so loading a saved model fails with `PytorchStreamReader
+  failed reading file .data/serialization_id`.
 - A GPU with Vulkan drivers for the upscaler. Tested on an NVIDIA GeForce GTX 1660 Ti.
   If the upscaler cannot start, the game still runs and shows the original picture.
 
@@ -239,10 +242,12 @@ stage. A small network (NatureCNN, 2.2M parameters) learns with PPO
   right than before in the episode, / 16. The screen only scrolls once an enemy wave is beaten, so
   points drive fighting and new ground drives moving on.
 
-Install PyTorch, then the rest (`requirements-rl.txt` has the GPU command for the training PC):
+Install PyTorch first, then the rest. With an NVIDIA GPU, take the CUDA build (if a CPU build got
+in first, `pip uninstall torch` and repeat):
 
 ```powershell
-pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu    # CPU only
+pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu126  # NVIDIA GPU
 pip install -r requirements-rl.txt
 ```
 
@@ -254,11 +259,56 @@ python -m agent.evaluate --model data\rl\<timestamp>\model.zip --minutes 5 --epi
 ```
 
 A timestep is one action (4 frames), so 1,000,000 are about 18 hours of game time; on a laptop CPU
-(8 emulators) that took about 1.6 hours, and the evaluation above about 8 minutes. Training writes
+(8 emulators) that took about 1.6 hours, and the evaluation above about 8 minutes. With a GTX 1660 Ti
+and a 6-core laptop CPU (`--device cuda --envs 24 --per-process 2 --batch-size 512 --target-kl 0.02`)
+training runs at ~700 steps per second, so 10,000,000 timesteps take about 4 hours. Training writes
 to `data\rl\<timestamp>\`: `model.zip`, `checkpoints\`, `progress.csv` (the training log;
-`dbgt/score`, `dbgt/ground` and `dbgt/waves` are the episode means) and `monitor\` (one line per
-episode). Ctrl+C stops early and still saves the model. `--envs` sets the number of emulators,
-`--root level03` starts from another planet, `--device cuda` trains on the GPU.
+`dbgt/score`, `dbgt/ground` and `dbgt/waves` are the episode means), `monitor\` (one line per
+episode) and `best\` (below). Ctrl+C stops early and still saves the model. `--envs` sets the number
+of emulators, `--root level03` starts from another planet, `--minutes` sets the game time per
+episode, `--device cuda` trains on the GPU.
+
+`--per-process 2` runs two emulators in each worker process (each from its own copy of the core,
+made in `core\copies\`), so `--envs 24 --per-process 2` uses 12 processes. On a 6-core / 12-thread
+laptop CPU with a GTX 1660 Ti that trained 17% faster than 12 emulators alone (~766 against ~655
+steps per second): the network runs between steps while the emulators wait, and that costs about the
+same for 24 emulators as for 12.
+
+A stopped run continues in its own folder from its latest checkpoint (saved every 100,000 timesteps,
+or `model.zip` after Ctrl+C), with the settings in its `run.json`; the logs and `best\` continue too.
+Only `--envs`, `--per-process`, `--device`, `--batch-size` (PPO minibatch, default 256) and
+`--target-kl` (stop an update early once the policy changed that much) can be changed when resuming;
+the last values used carry on otherwise:
+
+```powershell
+python -m agent.train --resume data\rl\<timestamp> --envs 24 --per-process 2
+```
+
+`--resume` also takes a checkpoint file, to go back to an earlier point of the run (for example
+before the training got worse). Whatever the run saved after that checkpoint is moved aside, not
+deleted: later checkpoints to `checkpoints\dropped\`, later `progress.csv` rows to
+`progress_dropped.csv`.
+
+```powershell
+python -m agent.train --resume data\rl\<timestamp>\checkpoints\ppo_3899652_steps.zip --batch-size 512
+```
+
+`best\` keeps the episode with the highest reward played by any emulator during the run, updated
+whenever a better one ends:
+
+| File | Contents |
+|---|---|
+| `episode.npz` | the start state and the action of every step; the emulator is deterministic, so this replays the whole episode |
+| `episode.json` | its reward, points, new ground, waves, steps, the training step it was played at, emulator, ROM and cheats |
+| `history.csv` | one line per new best, to see how the best improved over the run |
+| `episode.mp4`, `episode.png` | made by the replay at the end of training (also after Ctrl+C): every frame at 60 fps scaled 3x, and a contact sheet with one frame every 10 game seconds |
+
+To replay a recording yourself (it stops with an error if the replay scores differently from the
+recording):
+
+```powershell
+python -m agent.replay data\rl\<timestamp>\best\episode.npz
+```
 
 `agent.evaluate` plays the model, the explorer's random bursts and uniform random actions (a model
 that learned nothing), and prints the means of points, new ground, waves beaten, scenes and new

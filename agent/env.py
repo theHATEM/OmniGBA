@@ -112,13 +112,14 @@ class DbgtEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"]}
 
     def __init__(self, core, rom, state: bytes, cheats=(), frames_per_step: int = 4,
-                 max_steps: int = 1800, render_mode=None):
+                 max_steps: int = 1800, render_mode=None, on_frame=None):
         self.core, self.rom = str(core), str(rom)
         self.state = state
         self.cheats = list(cheats)
         self.frames_per_step = frames_per_step
         self.max_steps = max_steps  # 1800 steps of 4 frames = 2 game minutes
         self.render_mode = render_mode
+        self.on_frame = on_frame  # called with every game frame of a step (e.g. to write a video)
         self.observation_space = gym.spaces.Box(0, 255, OBS_SHAPE, np.uint8)
         self.action_space = gym.spaces.MultiDiscrete([len(DPAD), *[2] * len(BUTTONS)])
         self.emu = None  # started on the first reset, so each worker process makes its own
@@ -146,7 +147,13 @@ class DbgtEnv(gym.Env):
         return observe(self.emu.frame()), self._info()
 
     def step(self, action):
-        self.emu.step(action_to_mask(action), self.frames_per_step)
+        mask = action_to_mask(action)
+        if self.on_frame is None:
+            self.emu.step(mask, self.frames_per_step)
+        else:
+            for _ in range(self.frames_per_step):
+                self.emu.step(mask)
+                self.on_frame(self.emu.frame())
         reward = self.reward.step()
         self.steps += 1
         truncated = self.steps >= self.max_steps
